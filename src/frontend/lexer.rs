@@ -156,7 +156,7 @@ impl<'a> Lexer<'a> {
         while !self.is_end() && self.peek() != '\n' {
             self.advance();
         }
-        self.advance(); 
+        self.advance();
         Ok(())
     }
 
@@ -249,7 +249,7 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
+            }
             '!' => {
                 let next_char = self.peek();
                 if next_char == '=' {
@@ -265,7 +265,7 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
+            }
             '<' => {
                 let next_char = self.peek();
                 if next_char == '=' {
@@ -281,7 +281,7 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
+            }
             '>' => {
                 let next_char = self.peek();
                 if next_char == '=' {
@@ -297,15 +297,39 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
-            '(' => Ok(Token { ty: TokenType::LeftParen, span }),
-            ')' => Ok(Token { ty: TokenType::RightParen, span }),
-            '[' => Ok(Token { ty: TokenType::LeftBracket, span }),
-            ']' => Ok(Token { ty: TokenType::RightBracket, span }),
-            '{' => Ok(Token { ty: TokenType::LeftBrace, span }),
-            '}' => Ok(Token { ty: TokenType::RightBrace, span }),
-            ';' => Ok(Token { ty: TokenType::Semicolon, span }),
-            ',' => Ok(Token { ty: TokenType::Comma, span }),
+            }
+            '(' => Ok(Token {
+                ty: TokenType::LeftParen,
+                span,
+            }),
+            ')' => Ok(Token {
+                ty: TokenType::RightParen,
+                span,
+            }),
+            '[' => Ok(Token {
+                ty: TokenType::LeftBracket,
+                span,
+            }),
+            ']' => Ok(Token {
+                ty: TokenType::RightBracket,
+                span,
+            }),
+            '{' => Ok(Token {
+                ty: TokenType::LeftBrace,
+                span,
+            }),
+            '}' => Ok(Token {
+                ty: TokenType::RightBrace,
+                span,
+            }),
+            ';' => Ok(Token {
+                ty: TokenType::Semicolon,
+                span,
+            }),
+            ',' => Ok(Token {
+                ty: TokenType::Comma,
+                span,
+            }),
             '&' => {
                 let next_char = self.peek();
                 if next_char == '&' {
@@ -321,7 +345,7 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
+            }
             '|' => {
                 let next_char = self.peek();
                 if next_char == '|' {
@@ -337,7 +361,7 @@ impl<'a> Lexer<'a> {
                         span,
                     })
                 }
-            },
+            }
             '0'..='9' => self.lex_number(),
             'a'..='z' | 'A'..='Z' => self.lex_ident_or_keyword(),
             _ => Err(LexError {
@@ -429,7 +453,7 @@ mod tests {
     fn test_basic_operators() {
         let mut lexer = Lexer::new("+ - * / %");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 5);
         assert_eq!(tokens[0].ty, TokenType::Plus);
         assert_eq!(tokens[1].ty, TokenType::Minus);
@@ -442,7 +466,7 @@ mod tests {
     fn test_comparison_operators() {
         let mut lexer = Lexer::new("== != < <= > >=");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 6);
         assert_eq!(tokens[0].ty, TokenType::Equal);
         assert_eq!(tokens[1].ty, TokenType::NotEqual);
@@ -456,7 +480,7 @@ mod tests {
     fn test_assignment_and_arrow() {
         let mut lexer = Lexer::new("= -> :");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].ty, TokenType::Assign);
         assert_eq!(tokens[1].ty, TokenType::Arrow);
@@ -467,7 +491,7 @@ mod tests {
     fn test_delimiters() {
         let mut lexer = Lexer::new("( ) [ ] { } ; ,");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 8);
         assert_eq!(tokens[0].ty, TokenType::LeftParen);
         assert_eq!(tokens[1].ty, TokenType::RightParen);
@@ -483,7 +507,7 @@ mod tests {
     fn test_keywords() {
         let mut lexer = Lexer::new("let if else while loop bool true false fn i32");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 10);
         assert_eq!(tokens[0].ty, TokenType::Let);
         assert_eq!(tokens[1].ty, TokenType::If);
@@ -501,7 +525,7 @@ mod tests {
     fn test_integers() {
         let mut lexer = Lexer::new("123 0 456");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].ty, TokenType::Integer(123));
         assert_eq!(tokens[1].ty, TokenType::Integer(0));
@@ -512,7 +536,7 @@ mod tests {
     fn test_negative_numbers() {
         let mut lexer = Lexer::new("-123 -0");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].ty, TokenType::Integer(-123));
         assert_eq!(tokens[1].ty, TokenType::Integer(0));
@@ -522,19 +546,22 @@ mod tests {
     fn test_identifiers() {
         let mut lexer = Lexer::new("hello world_var camelCase UPPER_CASE");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].ty, TokenType::Identifier("hello".to_string()));
         assert_eq!(tokens[1].ty, TokenType::Identifier("world_var".to_string()));
         assert_eq!(tokens[2].ty, TokenType::Identifier("camelCase".to_string()));
-        assert_eq!(tokens[3].ty, TokenType::Identifier("UPPER_CASE".to_string()));
+        assert_eq!(
+            tokens[3].ty,
+            TokenType::Identifier("UPPER_CASE".to_string())
+        );
     }
 
     #[test]
     fn test_single_line_comments() {
         let mut lexer = Lexer::new("123 // this is a comment\n456");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].ty, TokenType::Integer(123));
         assert_eq!(tokens[1].ty, TokenType::Integer(456));
@@ -544,7 +571,7 @@ mod tests {
     fn test_multi_line_comments() {
         let mut lexer = Lexer::new("123 /* this is a\nmulti-line comment */ 456");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].ty, TokenType::Integer(123));
         assert_eq!(tokens[1].ty, TokenType::Integer(456));
@@ -554,7 +581,7 @@ mod tests {
     fn test_nested_multi_line_comments() {
         let mut lexer = Lexer::new("123 /* outer /* inner */ outer */ 456");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].ty, TokenType::Integer(123));
         assert_eq!(tokens[1].ty, TokenType::Integer(456));
@@ -564,7 +591,7 @@ mod tests {
     fn test_unterminated_comment_error() {
         let mut lexer = Lexer::new("123 /* unterminated comment");
         let result = lexer.tokenize();
-        
+
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message.contains("Unterminated multi-line comment"));
@@ -574,7 +601,7 @@ mod tests {
     fn test_function_declaration() {
         let mut lexer = Lexer::new("fn add(x: i32, y: i32) -> i32 { x + y }");
         let tokens = lexer.tokenize().unwrap();
-        
+
         let expected_types = vec![
             TokenType::Fn,
             TokenType::Identifier("add".to_string()),
@@ -595,7 +622,7 @@ mod tests {
             TokenType::Identifier("y".to_string()),
             TokenType::RightBrace,
         ];
-        
+
         assert_eq!(tokens.len(), expected_types.len());
         for (i, expected) in expected_types.iter().enumerate() {
             assert_eq!(tokens[i].ty, *expected);
@@ -606,7 +633,7 @@ mod tests {
     fn test_not_operator() {
         let mut lexer = Lexer::new("! != x");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].ty, TokenType::Not);
         assert_eq!(tokens[1].ty, TokenType::NotEqual);
@@ -617,7 +644,7 @@ mod tests {
     fn test_empty_input() {
         let mut lexer = Lexer::new("");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 0);
     }
 
@@ -625,7 +652,7 @@ mod tests {
     fn test_whitespace_only() {
         let mut lexer = Lexer::new("   \n\t  ");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 0);
     }
 
@@ -633,7 +660,7 @@ mod tests {
     fn test_complex_expression() {
         let mut lexer = Lexer::new("let x = (a + b) * c - d / e % f;");
         let tokens = lexer.tokenize().unwrap();
-        
+
         let expected_types = vec![
             TokenType::Let,
             TokenType::Identifier("x".to_string()),
@@ -653,7 +680,7 @@ mod tests {
             TokenType::Identifier("f".to_string()),
             TokenType::Semicolon,
         ];
-        
+
         assert_eq!(tokens.len(), expected_types.len());
         for (i, expected) in expected_types.iter().enumerate() {
             assert_eq!(tokens[i].ty, *expected);
@@ -664,7 +691,7 @@ mod tests {
     fn test_conditional_expression() {
         let mut lexer = Lexer::new("if x == y && z > 10 { true } else { false }");
         let tokens = lexer.tokenize().unwrap();
-        
+
         let expected_types = vec![
             TokenType::If,
             TokenType::Identifier("x".to_string()),
@@ -682,7 +709,7 @@ mod tests {
             TokenType::False,
             TokenType::RightBrace,
         ];
-        
+
         assert_eq!(tokens.len(), expected_types.len());
         for (i, expected) in expected_types.iter().enumerate() {
             assert_eq!(tokens[i].ty, *expected);
@@ -693,13 +720,16 @@ mod tests {
     fn test_position_tracking() {
         let mut lexer = Lexer::new("let x = 42;\nif true { }");
         let tokens = lexer.tokenize().unwrap();
-        
+
         // 测试第一个token的位置
         assert_eq!(tokens[0].span.start_pos.line, 1);
         assert_eq!(tokens[0].span.start_pos.column, 1);
-        
+
         // 找到第二行的if token
-        let if_token = tokens.iter().find(|t| matches!(t.ty, TokenType::If)).unwrap();
+        let if_token = tokens
+            .iter()
+            .find(|t| matches!(t.ty, TokenType::If))
+            .unwrap();
         assert_eq!(if_token.span.start_pos.line, 2);
     }
 
@@ -707,7 +737,7 @@ mod tests {
     fn test_invalid_character_error() {
         let mut lexer = Lexer::new("let x = @;");
         let result = lexer.tokenize();
-        
+
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message.contains("Unexpected character"));
@@ -717,7 +747,7 @@ mod tests {
     fn test_large_number_overflow() {
         let mut lexer = Lexer::new("999999999999999999999");
         let result = lexer.tokenize();
-        
+
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.message.contains("Invalid number"));
@@ -727,13 +757,11 @@ mod tests {
     fn test_minus_vs_negative_number() {
         let mut lexer = Lexer::new("x - 5 -10");
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 4);
         assert_eq!(tokens[0].ty, TokenType::Identifier("x".to_string()));
         assert_eq!(tokens[1].ty, TokenType::Minus);
         assert_eq!(tokens[2].ty, TokenType::Integer(5));
         assert_eq!(tokens[3].ty, TokenType::Integer(-10));
     }
-    
 }
-
