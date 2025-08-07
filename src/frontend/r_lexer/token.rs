@@ -8,9 +8,13 @@ pub struct Position {
 
 impl Position {
     pub fn new(line: usize, column: usize, index: usize) -> Self {
-        Self { line, column, index }
+        Self {
+            line,
+            column,
+            index,
+        }
     }
-    
+
     pub fn start() -> Self {
         Self::new(1, 1, 0)
     }
@@ -61,8 +65,8 @@ pub enum TokenType {
     Pub,
     Ref,
     Return,
-    SelfLower,  // self
-    SelfUpper,  // Self
+    SelfLower, // self
+    SelfUpper, // Self
     Static,
     Struct,
     Super,
@@ -76,7 +80,14 @@ pub enum TokenType {
     Async,
     Await,
     Dyn,
-    
+    I32,
+    U32,
+    ISize,
+    USize,
+    F32,
+    F64,
+    Bool,
+
     // Reserved keywords for future use
     Abstract,
     Become,
@@ -91,7 +102,7 @@ pub enum TokenType {
     Virtual,
     Yield,
     Try,
-    
+
     // Identifiers and literals
     Identifier,
     IntegerLiteral,
@@ -105,66 +116,66 @@ pub enum TokenType {
     RawByteStringLiteral,
     CStringLiteral,
     RawCStringLiteral,
-    
+
     // Multi-character operators
-    DotDotDot,      // ...
-    DotDotEq,       // ..=
-    SLEq,           // <<=
-    SREq,           // >>=
-    LEq,            // <=
-    EqEq,           // ==
-    NEq,            // !=
-    GEq,            // >=
-    AndAnd,         // &&
-    OrOr,           // ||
-    SL,             // <<
-    SR,             // >>
-    PlusEq,         // +=
-    MinusEq,        // -=
-    MulEq,          // *=
-    DivEq,          // /=
-    ModEq,          // %=
-    XorEq,          // ^=
-    AndEq,          // &=
-    OrEq,           // |=
-    DotDot,         // ..
-    ColonColon,     // ::
-    RArrow,         // ->
-    LArrow,         // <-
-    FatArrow,       // =>
-    
+    DotDotDot,  // ...
+    DotDotEq,   // ..=
+    SLEq,       // <<=
+    SREq,       // >>=
+    LEq,        // <=
+    EqEq,       // ==
+    NEq,        // !=
+    GEq,        // >=
+    AndAnd,     // &&
+    OrOr,       // ||
+    SL,         // <<
+    SR,         // >>
+    PlusEq,     // +=
+    MinusEq,    // -=
+    MulEq,      // *=
+    DivEq,      // /=
+    ModEq,      // %=
+    XorEq,      // ^=
+    AndEq,      // &=
+    OrEq,       // |=
+    DotDot,     // ..
+    ColonColon, // ::
+    RArrow,     // ->
+    LArrow,     // <-
+    FatArrow,   // =>
+
     // Single-character operators and punctuation
-    Eq,             // =
-    Lt,             // <
-    Gt,             // >
-    Not,            // !
-    Tilde,          // ~
-    Plus,           // +
-    Minus,          // -
-    Mul,            // *
-    Div,            // /
-    Percent,        // %
-    Xor,            // ^
-    And,            // &
-    Or,             // |
-    At,             // @
-    Dot,            // .
-    Comma,          // ,
-    Semicolon,      // ;
-    Colon,          // :
-    Pound,          // #
-    Dollar,         // $
-    Question,       // ?
-    Underscore,     // _
-    
+    Eq,         // =
+    Lt,         // <
+    Gt,         // >
+    Not,        // !
+    Tilde,      // ~
+    Plus,       // +
+    Minus,      // -
+    Mul,        // *
+    Div,        // /
+    Percent,    // %
+    Xor,        // ^
+    And,        // &
+    Or,         // |
+    At,         // @
+    Dot,        // .
+    Comma,      // ,
+    Semicolon,  // ;
+    Colon,      // :
+    Pound,      // #
+    Dollar,     // $
+    Question,   // ?
+    Underscore, // _
+
     // Delimiters
-    LBrace,         // {
-    RBrace,         // }
-    LBracket,       // [
-    RBracket,       // ]
-    LParen,         // (
-    RParen,         // )
-    
+    LBrace,   // {
+    RBrace,   // }
+    LBracket, // [
+    RBracket, // ]
+    LParen,   // (
+    RParen,   // )
+
     // Special tokens
     WhiteSpace,
     Comment,
@@ -227,52 +238,152 @@ impl TokenType {
             TokenType::Virtual => "virtual",
             TokenType::Yield => "yield",
             TokenType::Try => "try",
+            TokenType::I32 => "i32",
+            TokenType::U32 => "u32",
+            TokenType::ISize => "isize",
+            TokenType::USize => "usize",
+            TokenType::F32 => "f32",
+            TokenType::F64 => "f64",
+            TokenType::Bool => "bool",
             _ => "",
         }
     }
-    
+
     /// Check if this token type is a keyword
     pub fn is_keyword(&self) -> bool {
-        matches!(self,
-            TokenType::As | TokenType::Break | TokenType::Const | TokenType::Continue |
-            TokenType::Crate | TokenType::Else | TokenType::Enum | TokenType::Extern |
-            TokenType::False | TokenType::Fn | TokenType::For | TokenType::If |
-            TokenType::Impl | TokenType::In | TokenType::Let | TokenType::Loop |
-            TokenType::Match | TokenType::Mod | TokenType::Move | TokenType::Mut |
-            TokenType::Pub | TokenType::Ref | TokenType::Return | TokenType::SelfLower |
-            TokenType::SelfUpper | TokenType::Static | TokenType::Struct | TokenType::Super |
-            TokenType::Trait | TokenType::True | TokenType::Type | TokenType::Unsafe |
-            TokenType::Use | TokenType::Where | TokenType::While | TokenType::Async |
-            TokenType::Await | TokenType::Dyn | TokenType::Abstract | TokenType::Become |
-            TokenType::Box | TokenType::Do | TokenType::Final | TokenType::Macro |
-            TokenType::Override | TokenType::Priv | TokenType::Typeof | TokenType::Unsized |
-            TokenType::Virtual | TokenType::Yield | TokenType::Try
+        matches!(
+            self,
+            TokenType::As
+                | TokenType::Break
+                | TokenType::Const
+                | TokenType::Continue
+                | TokenType::Crate
+                | TokenType::Else
+                | TokenType::Enum
+                | TokenType::Extern
+                | TokenType::False
+                | TokenType::Fn
+                | TokenType::For
+                | TokenType::If
+                | TokenType::Impl
+                | TokenType::In
+                | TokenType::Let
+                | TokenType::Loop
+                | TokenType::Match
+                | TokenType::Mod
+                | TokenType::Move
+                | TokenType::Mut
+                | TokenType::Pub
+                | TokenType::Ref
+                | TokenType::Return
+                | TokenType::SelfLower
+                | TokenType::SelfUpper
+                | TokenType::Static
+                | TokenType::Struct
+                | TokenType::Super
+                | TokenType::Trait
+                | TokenType::True
+                | TokenType::Type
+                | TokenType::Unsafe
+                | TokenType::Use
+                | TokenType::Where
+                | TokenType::While
+                | TokenType::Async
+                | TokenType::Await
+                | TokenType::Dyn
+                | TokenType::Abstract
+                | TokenType::Become
+                | TokenType::Box
+                | TokenType::Do
+                | TokenType::Final
+                | TokenType::Macro
+                | TokenType::Override
+                | TokenType::Priv
+                | TokenType::Typeof
+                | TokenType::Unsized
+                | TokenType::Virtual
+                | TokenType::Yield
+                | TokenType::Try
         )
     }
-    
+
     /// Check if this token type is an operator
     pub fn is_operator(&self) -> bool {
-        matches!(self,
-            TokenType::DotDotDot | TokenType::DotDotEq | TokenType::SLEq | TokenType::SREq |
-            TokenType::LEq | TokenType::EqEq | TokenType::NEq | TokenType::GEq |
-            TokenType::AndAnd | TokenType::OrOr | TokenType::SL | TokenType::SR |
-            TokenType::PlusEq | TokenType::MinusEq | TokenType::MulEq | TokenType::DivEq |
-            TokenType::ModEq | TokenType::XorEq | TokenType::AndEq | TokenType::OrEq |
-            TokenType::DotDot | TokenType::ColonColon | TokenType::RArrow | TokenType::LArrow |
-            TokenType::FatArrow | TokenType::Eq | TokenType::Lt | TokenType::Gt |
-            TokenType::Not | TokenType::Tilde | TokenType::Plus | TokenType::Minus |
-            TokenType::Mul | TokenType::Div | TokenType::Percent | TokenType::Xor |
-            TokenType::And | TokenType::Or | TokenType::At | TokenType::Dot |
-            TokenType::Question
+        matches!(
+            self,
+            TokenType::DotDotDot
+                | TokenType::DotDotEq
+                | TokenType::SLEq
+                | TokenType::SREq
+                | TokenType::LEq
+                | TokenType::EqEq
+                | TokenType::NEq
+                | TokenType::GEq
+                | TokenType::AndAnd
+                | TokenType::OrOr
+                | TokenType::SL
+                | TokenType::SR
+                | TokenType::PlusEq
+                | TokenType::MinusEq
+                | TokenType::MulEq
+                | TokenType::DivEq
+                | TokenType::ModEq
+                | TokenType::XorEq
+                | TokenType::AndEq
+                | TokenType::OrEq
+                | TokenType::DotDot
+                | TokenType::ColonColon
+                | TokenType::RArrow
+                | TokenType::LArrow
+                | TokenType::FatArrow
+                | TokenType::Eq
+                | TokenType::Lt
+                | TokenType::Gt
+                | TokenType::Not
+                | TokenType::Tilde
+                | TokenType::Plus
+                | TokenType::Minus
+                | TokenType::Mul
+                | TokenType::Div
+                | TokenType::Percent
+                | TokenType::Xor
+                | TokenType::And
+                | TokenType::Or
+                | TokenType::At
+                | TokenType::Dot
+                | TokenType::Question
         )
     }
-    
+
     /// Check if this token type is punctuation
     pub fn is_punctuation(&self) -> bool {
-        matches!(self,
-            TokenType::Comma | TokenType::Semicolon | TokenType::Colon | TokenType::Pound |
-            TokenType::Dollar | TokenType::Underscore | TokenType::LBrace | TokenType::RBrace |
-            TokenType::LBracket | TokenType::RBracket | TokenType::LParen | TokenType::RParen
+        matches!(
+            self,
+            TokenType::Comma
+                | TokenType::Semicolon
+                | TokenType::Colon
+                | TokenType::Pound
+                | TokenType::Dollar
+                | TokenType::Underscore
+                | TokenType::LBrace
+                | TokenType::RBrace
+                | TokenType::LBracket
+                | TokenType::RBracket
+                | TokenType::LParen
+                | TokenType::RParen
+        )
+    }
+
+    /// Check if this token type is a type literal
+    pub fn is_type_literal(&self) -> bool {
+        matches!(
+            self,
+            TokenType::I32
+                | TokenType::U32
+                | TokenType::ISize
+                | TokenType::USize
+                | TokenType::F32
+                | TokenType::F64
         )
     }
 }

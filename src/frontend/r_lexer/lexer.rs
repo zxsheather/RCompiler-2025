@@ -185,6 +185,13 @@ impl Lexer {
             ("virtual", TokenType::Virtual),
             ("yield", TokenType::Yield),
             ("try", TokenType::Try),
+            ("i32", TokenType::I32),
+            ("u32", TokenType::U32),
+            ("isize", TokenType::ISize),
+            ("usize", TokenType::USize),
+            ("f32", TokenType::F32),
+            ("f64", TokenType::F64),
+            ("bool", TokenType::Bool),
         ];
 
         for (keyword, token_type) in keywords {

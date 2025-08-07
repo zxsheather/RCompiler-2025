@@ -7,8 +7,8 @@ mod tests {
     fn test_keywords() {
         let mut lexer = Lexer::new("fn let mut if else while".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
-        assert_eq!(tokens.len(), 7); 
+
+        assert_eq!(tokens.len(), 7);
         assert_eq!(tokens[0].token_type, TokenType::Fn);
         assert_eq!(tokens[1].token_type, TokenType::Let);
         assert_eq!(tokens[2].token_type, TokenType::Mut);
@@ -35,11 +35,14 @@ mod tests {
     fn test_integer_literals() {
         let mut lexer = Lexer::new("42 0x2A 0b101010 0o52 123u32 456isize".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 7); // 6 numbers + EOF
         // Note: might match as ReservedIntegerLiteral depending on pattern priority
         for i in 0..6 {
-            assert!(matches!(tokens[i].token_type, TokenType::IntegerLiteral | TokenType::ReservedIntegerLiteral));
+            assert!(matches!(
+                tokens[i].token_type,
+                TokenType::IntegerLiteral | TokenType::ReservedIntegerLiteral
+            ));
         }
         assert_eq!(tokens[0].lexeme, "42");
         assert_eq!(tokens[1].lexeme, "0x2A");
@@ -69,7 +72,7 @@ mod tests {
     fn test_character_literals() {
         let mut lexer = Lexer::new("'a' '\\n' '\\x41' b'B'".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 5); // 4 chars + EOF
         assert_eq!(tokens[0].token_type, TokenType::CharLiteral);
         assert_eq!(tokens[0].lexeme, "'a'");
@@ -85,7 +88,7 @@ mod tests {
     fn test_operators() {
         let mut lexer = Lexer::new("+ - * / % == != <= >= && || -> =>".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         let expected_types = [
             TokenType::Plus,
             TokenType::Minus,
@@ -102,7 +105,7 @@ mod tests {
             TokenType::FatArrow,
             TokenType::Eof,
         ];
-        
+
         assert_eq!(tokens.len(), expected_types.len());
         for (token, expected) in tokens.iter().zip(expected_types.iter()) {
             assert_eq!(token.token_type, *expected);
@@ -113,7 +116,7 @@ mod tests {
     fn test_punctuation() {
         let mut lexer = Lexer::new("{ } [ ] ( ) , ; : :: .".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         let expected_types = [
             TokenType::LBrace,
             TokenType::RBrace,
@@ -128,7 +131,7 @@ mod tests {
             TokenType::Dot,
             TokenType::Eof,
         ];
-        
+
         assert_eq!(tokens.len(), expected_types.len());
         for (token, expected) in tokens.iter().zip(expected_types.iter()) {
             assert_eq!(token.token_type, *expected);
@@ -154,7 +157,7 @@ mod tests {
     fn test_invalid_token_error() {
         let mut lexer = Lexer::new("let x = @@@".to_string()).unwrap();
         let result = lexer.tokenize(); // Use filtered to avoid whitespace
-        
+
         match result {
             Ok(tokens) => {
                 // Should have let, x, =, @, @, @, EOF
@@ -175,7 +178,7 @@ mod tests {
         let source = "fn fibonacci(n: u32) -> u32 { if n <= 1 { n } else { fibonacci(n-1) + fibonacci(n-2) } }";
         let mut lexer = Lexer::new(source.to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         // Should start with fn, fibonacci, (, n, :, u32, ), -, >, u32, {
         assert_eq!(tokens[0].token_type, TokenType::Fn);
         assert_eq!(tokens[1].token_type, TokenType::Identifier);
@@ -194,7 +197,7 @@ mod tests {
     fn test_self_vs_self_upper() {
         let mut lexer = Lexer::new("self Self".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 3); // self, Self, EOF
         assert_eq!(tokens[0].token_type, TokenType::SelfLower);
         assert_eq!(tokens[0].lexeme, "self");
@@ -207,7 +210,7 @@ mod tests {
         // Test that longer operators are matched before shorter ones
         let mut lexer = Lexer::new("<<= << <= <".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        
+
         assert_eq!(tokens.len(), 5); // 4 operators + EOF
         assert_eq!(tokens[0].token_type, TokenType::SLEq);
         assert_eq!(tokens[0].lexeme, "<<=");

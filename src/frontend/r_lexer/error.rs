@@ -10,7 +10,7 @@ pub enum LexError {
         line: usize,
         column: usize,
     },
-    
+
     #[error("Lexer error at line {line}, column {column}: {message}")]
     Generic {
         message: String,
