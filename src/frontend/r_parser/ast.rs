@@ -74,6 +74,14 @@ pub struct ExprStatementNode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionNode {
+    // Primaries
+    Identifier(Token),
+    IntegerLiteral(Token),
+    FloatLiteral(Token),
+    StringLiteral(Token),
+    BoolLiteral(Token),
+    Block(Box<BlockNode>),
+    // Complex
     Unary(UnaryExprNode),
     Binary(BinaryExprNode),
     Call(CallExprNode),
