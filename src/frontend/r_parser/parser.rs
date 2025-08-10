@@ -64,22 +64,57 @@ impl Parser {
 
     fn parse_type(&mut self) -> ParseResult<TypeNode> {
         let token = self.current_token().clone();
-        let res = match token.token_type {
-            TokenType::I32 => Ok(TypeNode::I32(token)),
-            TokenType::U32 => Ok(TypeNode::U32(token)),
-            TokenType::ISize => Ok(TypeNode::ISize(token)),
-            TokenType::USize => Ok(TypeNode::USize(token)),
-            TokenType::F32 => Ok(TypeNode::F32(token)),
-            TokenType::F64 => Ok(TypeNode::F64(token)),
-            TokenType::Bool => Ok(TypeNode::Bool(token)),
+        match token.token_type {
+            TokenType::I32 => {
+                self.advance();
+                Ok(TypeNode::I32(token))
+            }
+            TokenType::U32 => {
+                self.advance();
+                Ok(TypeNode::U32(token))
+            }
+            TokenType::ISize => {
+                self.advance();
+                Ok(TypeNode::ISize(token))
+            }
+            TokenType::USize => {
+                self.advance();
+                Ok(TypeNode::USize(token))
+            }
+            TokenType::F32 => {
+                self.advance();
+                Ok(TypeNode::F32(token))
+            }
+            TokenType::F64 => {
+                self.advance();
+                Ok(TypeNode::F64(token))
+            }
+            TokenType::Bool => {
+                self.advance();
+                Ok(TypeNode::Bool(token))
+            }
+            TokenType::LBracket => {
+                // [T; N] or [T]
+                self.advance();
+                let elem_type = self.parse_type()?;
+                let size = if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                    Some(self.expect_type(&TokenType::IntegerLiteral)?)
+                } else {
+                    None
+                };
+                self.expect_type(&TokenType::RBracket)?;
+                Ok(TypeNode::Array {
+                    elem_type: Box::new(elem_type),
+                    size,
+                })
+            }
             _ => Err(ParseError::Generic {
                 message: format!("Expected a type, found {:?}", token.token_type),
                 line: token.position.line,
                 column: token.position.column,
             }),
-        };
-        self.advance();
-        res
+        }
     }
 
     fn parse_block(&mut self) -> ParseResult<BlockNode> {
@@ -113,11 +148,10 @@ impl Parser {
         // Currently, only 'let' and simple assignments are forced statements
         match self.current_token().token_type {
             TokenType::Let => true,
-            TokenType::Identifier => {
-                self.peek_safe()
-                    .map(|t| matches!(t.token_type, TokenType::Eq))
-                    .unwrap_or(false)
-            }
+            TokenType::Identifier => self
+                .peek_safe()
+                .map(|t| matches!(t.token_type, TokenType::Eq))
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -126,6 +160,10 @@ impl Parser {
         match self.current_token().token_type {
             TokenType::Let => {
                 let let_token = self.expect_type(&TokenType::Let)?;
+                let mutable = self.check_type(&TokenType::Mut);
+                if mutable {
+                    self.advance();
+                }
                 let identifier = self.expect_type(&TokenType::Identifier)?;
 
                 let type_annotation = if self.check_type(&TokenType::Colon) {
@@ -141,18 +179,26 @@ impl Parser {
 
                 Ok(StatementNode::Let(LetStatementNode {
                     let_token,
+                    mutable,
                     identifier,
                     type_annotation,
                     value,
                 }))
             }
             TokenType::Identifier => {
-                if self.peek_safe().map(|t| matches!(t.token_type, TokenType::Eq)).unwrap_or(false) {
+                if self
+                    .peek_safe()
+                    .map(|t| matches!(t.token_type, TokenType::Eq))
+                    .unwrap_or(false)
+                {
                     let identifier = self.expect_type(&TokenType::Identifier)?;
                     self.expect_type(&TokenType::Eq)?;
                     let value = self.parse_expression()?;
                     self.expect_type(&TokenType::Semicolon)?;
-                    Ok(StatementNode::Assign(AssignStatementNode { identifier, value }))
+                    Ok(StatementNode::Assign(AssignStatementNode {
+                        identifier,
+                        value,
+                    }))
                 } else {
                     let expression = self.parse_expression()?;
                     self.expect_type(&TokenType::Semicolon)?;
@@ -186,6 +232,11 @@ impl Parser {
             }
             TokenType::If => self.parse_if_expression()?,
             TokenType::While => self.parse_while_expression()?,
+            TokenType::LBrace => {
+                let block = self.parse_block()?;
+                ExpressionNode::Block(Box::new(block))
+            }
+            TokenType::LBracket => ExpressionNode::ArrayLiteral(self.parse_array_literal()?),
             TokenType::LParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
@@ -227,6 +278,7 @@ impl Parser {
             }
         };
 
+        // Postfix and infix
         loop {
             // Function call as postfix operator: highest precedence
             if self.check_type(&TokenType::LParen) {
@@ -234,6 +286,17 @@ impl Parser {
                 lhs = ExpressionNode::Call(CallExprNode {
                     function: Box::new(lhs),
                     args,
+                });
+                continue;
+            }
+
+            if self.check_type(&TokenType::LBracket) {
+                self.advance();
+                let index = self.parse_expression()?;
+                self.expect_type(&TokenType::RBracket)?;
+                lhs = ExpressionNode::Index(IndexExprNode {
+                    array: Box::new(lhs),
+                    index: Box::new(index),
                 });
                 continue;
             }
@@ -260,21 +323,21 @@ impl Parser {
     }
 
     fn infix_binding_power(&self, tt: &TokenType) -> Option<(u8, u8)> {
-        // Return (left_bp, right_bp) pairs. Left associative by default.
-        let lbp = match tt {
-            TokenType::OrOr => 1,
-            TokenType::AndAnd => 3,
-            TokenType::Or => 5,
-            TokenType::Xor => 7,
-            TokenType::And => 9,
-            TokenType::EqEq | TokenType::NEq => 11,
-            TokenType::Lt | TokenType::LEq | TokenType::Gt | TokenType::GEq => 13,
-            TokenType::SL | TokenType::SR => 15,
-            TokenType::Plus | TokenType::Minus => 17,
-            TokenType::Mul | TokenType::Div | TokenType::Percent => 19,
+        // Return (left_bp, right_bp) pairs.
+        match tt {
+            TokenType::Eq => Some((10, 9)),
+            TokenType::OrOr => Some((30, 31)),
+            TokenType::AndAnd => Some((40, 41)),
+            TokenType::Or => Some((50, 51)),
+            TokenType::Xor => Some((60, 61)),
+            TokenType::And => Some((70, 71)),
+            TokenType::EqEq | TokenType::NEq => Some((80, 81)),
+            TokenType::Lt | TokenType::LEq | TokenType::Gt | TokenType::GEq => Some((90, 91)),
+            TokenType::SL | TokenType::SR => Some((100, 101)),
+            TokenType::Plus | TokenType::Minus => Some((110, 111)),
+            TokenType::Mul | TokenType::Div | TokenType::Percent => Some((120, 121)),
             _ => return None,
-        };
-        Some((lbp, lbp + 1))
+        }
     }
 
     fn parse_argument_list(&mut self) -> ParseResult<Vec<ExpressionNode>> {
@@ -368,6 +431,26 @@ impl Parser {
             name,
             type_annotation,
         })
+    }
+
+    fn parse_array_literal(&mut self) -> ParseResult<ArrayLiteralNode> {
+        self.expect_type(&TokenType::LBracket)?;
+        let mut elements = Vec::new();
+        if self.check_type(&TokenType::RBracket) {
+            self.advance();
+            return Ok(ArrayLiteralNode { elements });
+        }
+        loop {
+            let expr = self.parse_expression()?;
+            elements.push(expr);
+            if self.check_type(&TokenType::Comma) {
+                self.advance();
+                continue;
+            }
+            self.expect_type(&TokenType::RBracket)?;
+            break;
+        }
+        Ok(ArrayLiteralNode { elements })
     }
 
     fn is_end(&self) -> bool {

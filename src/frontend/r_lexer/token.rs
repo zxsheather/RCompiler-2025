@@ -1,5 +1,7 @@
+use serde::Serialize;
+
 /// Position information for tokens
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -21,7 +23,7 @@ impl Position {
 }
 
 /// Represents a token with its type, lexeme, and position
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Token {
     pub token_type: TokenType,
     pub lexeme: String,
@@ -39,7 +41,7 @@ impl Token {
 }
 
 /// All possible token types in the Rust-like language
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum TokenType {
     // Keywords - Reserved words
     As,

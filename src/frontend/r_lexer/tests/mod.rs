@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(tokens[3].token_type, TokenType::Identifier);
         assert_eq!(tokens[3].lexeme, "n");
         assert_eq!(tokens[4].token_type, TokenType::Colon);
-        assert_eq!(tokens[5].token_type, TokenType::Identifier);
+        assert_eq!(tokens[5].token_type, TokenType::U32);
         assert_eq!(tokens[5].lexeme, "u32");
         assert_eq!(tokens[6].token_type, TokenType::RParen);
         assert_eq!(tokens[7].token_type, TokenType::RArrow);
