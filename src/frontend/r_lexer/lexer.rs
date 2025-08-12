@@ -76,12 +76,8 @@ impl Lexer {
         self.add_rule(TokenType::LArrow, r"<-")?;
 
         // Number Literals
-        self.add_rule(
-            TokenType::FloatLiteral,
-            r"^[+-]?(\d(?:_?\d)*\.(?:\d(?:_?\d)*)?|\.\d(?:_?\d)*)(f32|f64)?$",
-        )?;
         self.add_rule(TokenType::IntegerLiteral,  r"[+-]?((0b[_01]*[01][_01]*)|(0o[_0-7]*[0-7][_0-7]*)|(0x[_0-9a-fA-F]*[0-9a-fA-F][_0-9a-fA-F]*)|([0-9][_0-9]*))(u32|i32|usize|isize)?")?;
-        self.add_rule(TokenType::ReservedIntegerLiteral, r"[+-]?((0b[_0-9]*[0-9][_0-9]*)|(0o[_0-9]*[0-9][_0-9]*)|(0x[_0-9a-fA-F]*[0-9a-fA-F][_0-9a-fA-F]*)|([0-9][_0-9]*))(u32|i32|usize|isize)?")?;
+        // self.add_rule(TokenType::ReservedIntegerLiteral, r"[+-]?((0b[_0-9]*[0-9][_0-9]*)|(0o[_0-9]*[0-9][_0-9]*)|(0x[_0-9a-fA-F]*[0-9a-fA-F][_0-9a-fA-F]*)|([0-9][_0-9]*))(u32|i32|usize|isize)?")?;
 
         // Length = 1
         self.add_rule(TokenType::LBrace, r"\{")?;
@@ -189,8 +185,6 @@ impl Lexer {
             ("u32", TokenType::U32),
             ("isize", TokenType::ISize),
             ("usize", TokenType::USize),
-            ("f32", TokenType::F32),
-            ("f64", TokenType::F64),
             ("bool", TokenType::Bool),
         ];
 

@@ -14,8 +14,6 @@ pub enum TypeNode {
     U32(Token),
     ISize(Token),
     USize(Token),
-    F32(Token),
-    F64(Token),
     Bool(Token),
     String(Token),
     Unit,
@@ -88,7 +86,6 @@ pub enum ExpressionNode {
     // Primaries
     Identifier(Token),
     IntegerLiteral(Token),
-    FloatLiteral(Token),
     StringLiteral(Token),
     BoolLiteral(Token),
     Block(Box<BlockNode>),

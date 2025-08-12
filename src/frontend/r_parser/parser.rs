@@ -81,14 +81,6 @@ impl Parser {
                 self.advance();
                 Ok(TypeNode::USize(token))
             }
-            TokenType::F32 => {
-                self.advance();
-                Ok(TypeNode::F32(token))
-            }
-            TokenType::F64 => {
-                self.advance();
-                Ok(TypeNode::F64(token))
-            }
             TokenType::Bool => {
                 self.advance();
                 Ok(TypeNode::Bool(token))
@@ -252,11 +244,6 @@ impl Parser {
                 let tok = self.current_token().clone();
                 self.advance();
                 ExpressionNode::IntegerLiteral(tok)
-            }
-            TokenType::FloatLiteral => {
-                let tok = self.current_token().clone();
-                self.advance();
-                ExpressionNode::FloatLiteral(tok)
             }
             TokenType::StringLiteral => {
                 let tok = self.current_token().clone();

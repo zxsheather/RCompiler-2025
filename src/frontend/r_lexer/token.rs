@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::fmt;
 
 /// Position information for tokens
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -86,8 +87,6 @@ pub enum TokenType {
     U32,
     ISize,
     USize,
-    F32,
-    F64,
     Bool,
 
     // Reserved keywords for future use
@@ -244,9 +243,66 @@ impl TokenType {
             TokenType::U32 => "u32",
             TokenType::ISize => "isize",
             TokenType::USize => "usize",
-            TokenType::F32 => "f32",
-            TokenType::F64 => "f64",
             TokenType::Bool => "bool",
+            TokenType::StringLiteral => "string",
+            TokenType::CharLiteral => "char",
+
+            TokenType::DotDotDot => "...",
+            TokenType::DotDotEq => "..=",
+            TokenType::SLEq => "<=",
+            TokenType::SREq => ">>=",
+            TokenType::LEq => "<=",
+            TokenType::EqEq => "==",
+            TokenType::NEq => "!=",
+            TokenType::GEq => ">=",
+            TokenType::AndAnd => "&&",
+            TokenType::OrOr => "||",
+            TokenType::SL => "<<",
+            TokenType::SR => ">>",
+            TokenType::PlusEq => "+=",
+            TokenType::MinusEq => "-=",
+            TokenType::MulEq => "*=",
+            TokenType::DivEq => "/=",
+            TokenType::ModEq => "%=",
+            TokenType::XorEq => "^=",
+            TokenType::AndEq => "&=",
+            TokenType::OrEq => "|=",
+            TokenType::ColonColon => "::",
+            TokenType::RArrow => "->",
+            TokenType::LArrow => "<-",
+            TokenType::FatArrow => "=>",
+
+            TokenType::Eq => "=",
+            TokenType::Lt => "<",
+            TokenType::Gt => ">",
+            TokenType::Not => "!",
+            TokenType::Tilde => "~",
+            TokenType::Plus => "+",
+            TokenType::Minus => "-",
+            TokenType::Mul => "*",
+            TokenType::Div => "/",
+            TokenType::Percent => "%",
+            TokenType::Xor => "^",
+            TokenType::And => "&",
+            TokenType::Or => "|",
+            TokenType::At => "@",
+            TokenType::Dot => ".",
+            TokenType::Comma => ",",
+            TokenType::Semicolon => ";",
+            TokenType::Colon => ":",
+            TokenType::Pound => "#",
+            TokenType::Dollar => "$",
+            TokenType::Question => "?",
+            TokenType::Underscore => "_",
+
+            TokenType::LBrace => "{",
+            TokenType::RBrace => "}",
+            TokenType::LBracket => "[",
+            TokenType::RBracket => "]",
+            TokenType::LParen => "(",
+            TokenType::RParen => ")",
+
+            TokenType::Eof => "EOF",
             _ => "",
         }
     }
@@ -380,12 +436,13 @@ impl TokenType {
     pub fn is_type_literal(&self) -> bool {
         matches!(
             self,
-            TokenType::I32
-                | TokenType::U32
-                | TokenType::ISize
-                | TokenType::USize
-                | TokenType::F32
-                | TokenType::F64
+            TokenType::I32 | TokenType::U32 | TokenType::ISize | TokenType::USize
         )
+    }
+}
+
+impl fmt::Display for TokenType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
