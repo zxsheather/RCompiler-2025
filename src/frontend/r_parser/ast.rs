@@ -17,6 +17,7 @@ pub enum TypeNode {
     Bool(Token),
     String(Token),
     Unit,
+    Tuple(Vec<TypeNode>),
     Array {
         elem_type: Box<TypeNode>,
         size: Option<Token>,
@@ -55,6 +56,11 @@ pub struct ArrayLiteralNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TupleLiteralNode {
+    pub elements: Vec<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum StatementNode {
     Let(LetStatementNode),
     Assign(AssignStatementNode),
@@ -89,6 +95,7 @@ pub enum ExpressionNode {
     StringLiteral(Token),
     BoolLiteral(Token),
     Block(Box<BlockNode>),
+    TupleLiteral(TupleLiteralNode),
     ArrayLiteral(ArrayLiteralNode),
     // Complex
     Unary(UnaryExprNode),

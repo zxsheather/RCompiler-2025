@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use frontend::r_lexer::lexer::Lexer;
 use frontend::r_parser::parser::Parser;
 
+use crate::frontend::r_semantic::analyzer::Analyzer;
+
 fn print_usage() {
     eprintln!(
         "Usage:
@@ -96,6 +98,13 @@ fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
                 return 1;
             }
         }
+    }
+
+    // Analyzing
+    let mut analyzer = Analyzer::new();
+    if let Err(e) = analyzer.analyse_program(&nodes) {
+        eprintln!("semantic error: {e}");
+        return 1;
     }
 
     0

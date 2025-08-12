@@ -26,6 +26,10 @@ impl Parser {
                 continue;
             }
 
+            if self.check_type(&TokenType::Eof) {
+                break;
+            }
+
             nodes.push(self.next_node()?);
 
             if self.check_type(&TokenType::Eof) {
@@ -100,6 +104,31 @@ impl Parser {
                     elem_type: Box::new(elem_type),
                     size,
                 })
+            }
+            // tuple
+            TokenType::LParen => {
+                self.advance();
+                if self.check_type(&TokenType::RParen) {
+                    self.advance();
+                    return Ok(TypeNode::Unit);
+                }
+                let first = self.parse_type()?;
+                if self.check_type(&TokenType::Comma) {
+                    let mut elems = vec![first];
+                    while self.check_type(&TokenType::Comma) {
+                        self.advance();
+                        if self.check_type(&TokenType::RParen) {
+                            break;
+                        }
+                        let ty = self.parse_type()?;
+                        elems.push(ty);
+                    }
+                    self.expect_type(&TokenType::RParen)?;
+                    Ok(TypeNode::Tuple(elems))
+                } else {
+                    self.expect_type(&TokenType::RParen)?;
+                    Ok(first)
+                }
             }
             _ => Err(ParseError::Generic {
                 message: format!("Expected a type, found {:?}", token.token_type),
@@ -231,9 +260,30 @@ impl Parser {
             TokenType::LBracket => ExpressionNode::ArrayLiteral(self.parse_array_literal()?),
             TokenType::LParen => {
                 self.advance();
-                let expr = self.parse_expression()?;
-                self.expect_type(&TokenType::RParen)?;
-                expr
+                if self.check_type(&TokenType::RParen) {
+                    self.advance();
+                    ExpressionNode::TupleLiteral(TupleLiteralNode {
+                        elements: Vec::new(),
+                    })
+                } else {
+                    let first_expr = self.parse_expression()?;
+                    if self.check_type(&TokenType::Comma) {
+                        let mut elems = vec![first_expr];
+                        while self.check_type(&TokenType::Comma) {
+                            self.advance();
+                            if self.check_type(&TokenType::RParen) {
+                                break;
+                            }
+                            let expr = self.parse_expression()?;
+                            elems.push(expr);
+                        }
+                        self.expect_type(&TokenType::RParen)?;
+                        ExpressionNode::TupleLiteral(TupleLiteralNode { elements: elems })
+                    } else {
+                        self.expect_type(&TokenType::RParen)?;
+                        first_expr
+                    }
+                }
             }
             TokenType::Identifier => {
                 let tok = self.current_token().clone();

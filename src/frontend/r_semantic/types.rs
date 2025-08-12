@@ -9,6 +9,7 @@ pub enum RxType {
     Bool,
     String,
     Unit,
+    Tuple(Vec<RxType>),
     Array(Box<RxType>, Option<usize>),
 }
 
@@ -22,6 +23,10 @@ impl fmt::Display for RxType {
             RxType::Bool => write!(f, "bool"),
             RxType::String => write!(f, "string"),
             RxType::Unit => write!(f, "()"),
+            RxType::Tuple(elems_tys) => {
+                let elems: Vec<String> = elems_tys.iter().map(|t| t.to_string()).collect();
+                write!(f, "({})", elems.join(", "))
+            }
             RxType::Array(t, sz) => {
                 if let Some(n) = sz {
                     write!(f, "[{}; {}]", t, n)

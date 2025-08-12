@@ -319,3 +319,33 @@ fn multi_dimension_array() {
     let nodes = parse_nodes("let a: [[i32; 2]; 3] = [[1, 2], [3, 4], [5, 6]];");
     assert_eq!(nodes.len(), 1);
 }
+
+#[test]
+fn tuple_literal_and_type_parsing() {
+    // Tuple literal
+    let expr = parse_expr("(1, )");
+    match expr {
+        ExpressionNode::TupleLiteral(elems) => {
+            assert_eq!(elems.elements.len(), 1);
+        }
+        _ => panic!("expected tuple literal"),
+    }
+
+    let expr = parse_expr("(1)");
+    match expr {
+        ExpressionNode::TupleLiteral(_) => panic!("expected not a tuple literal"),
+        _ => {}
+    }
+    // Tuple type in fn signature
+    let nodes = parse_nodes("fn f(t: (i32, bool)) { }; ");
+    match &nodes[0] {
+        AstNode::Function(func) => {
+            let ann = func.param_list.params[0].type_annotation.as_ref().unwrap();
+            match ann {
+                TypeNode::Tuple(ts) => assert_eq!(ts.len(), 2),
+                _ => panic!("expected tuple type"),
+            }
+        }
+        _ => panic!("expected function"),
+    }
+}

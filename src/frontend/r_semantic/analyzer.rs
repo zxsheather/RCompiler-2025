@@ -5,7 +5,7 @@ use crate::frontend::{
     r_parser::ast::{
         AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, IndexExprNode,
-        LetStatementNode, StatementNode, TypeNode, UnaryExprNode, WhileExprNode,
+        LetStatementNode, StatementNode, TupleLiteralNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -302,21 +302,32 @@ impl Analyzer {
             ExpressionNode::BoolLiteral(_) => Ok(RxType::Bool),
             ExpressionNode::Block(b) => Ok(self.analyse_block(b)?),
             ExpressionNode::ArrayLiteral(arr) => {
-                let res = if let Some(node) = arr.elements.first() {
+                let elem_ty = if let Some(node) = arr.elements.first() {
                     self.analyse_expression(node)?
                 } else {
                     RxType::Unit
                 };
                 for elem in arr.elements.iter() {
                     let tp = self.analyse_expression(elem)?;
-                    if tp != res {
+                    if tp != elem_ty {
                         return Err(SemanticError::MixedTypedArray {
-                            type1: res,
+                            type1: elem_ty,
                             type2: tp,
                         });
                     }
                 }
-                Ok(res)
+                Ok(RxType::Array(Box::new(elem_ty), Some(arr.elements.len())))
+            }
+            ExpressionNode::TupleLiteral(t) => {
+                if t.elements.is_empty() {
+                    Ok(RxType::Unit)
+                } else {
+                    let mut types = Vec::with_capacity(t.elements.len());
+                    for elem in &t.elements {
+                        types.push(self.analyse_expression(elem)?);
+                    }
+                    Ok(RxType::Tuple(types))
+                }
             }
             ExpressionNode::Unary(u) => Ok(self.analyse_unary(u)?),
             ExpressionNode::Binary(b) => Ok(self.analyse_binary(b)?),
@@ -506,15 +517,17 @@ impl Analyzer {
             Some(ElseBodyNode::If(i)) => Some(self.analyse_if(i)?),
             None => None,
         };
-        if let Some(elty) = else_ty
-            && elty != then_ty
-        {
-            Err(SemanticError::BranchTypeMismatched {
-                then_ty,
-                else_ty: elty,
-                line,
-                column,
-            })
+        if let Some(elty) = else_ty {
+            if elty != then_ty {
+                Err(SemanticError::BranchTypeMismatched {
+                    then_ty,
+                    else_ty: elty,
+                    line,
+                    column,
+                })
+            } else {
+                Ok(then_ty)
+            }
         } else {
             Ok(then_ty)
         }
