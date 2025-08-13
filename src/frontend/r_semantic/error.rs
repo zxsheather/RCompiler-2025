@@ -171,7 +171,7 @@ pub enum SemanticError {
         column: usize,
     },
 
-    #[error("Left-hand side of '=' must be an identifier, at line {line}, column {column}")]
+    #[error("Left-hand side of '=' must be an identifier/array[index]/struct.field, at line {line}, column {column}")]
     InvalidLValueType { line: usize, column: usize },
 
     #[error("{msg}, at line {line}, column {column}")]

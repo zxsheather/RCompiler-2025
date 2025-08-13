@@ -176,3 +176,61 @@ fn struct_literal_shorthand_semantic() {
     "#;
     assert!(analyze_src(src).is_ok());
 }
+
+#[test]
+fn array_element_assignment_ok() {
+    let src = r#"
+        fn main() { let mut a: [i32; 3] = [1, 2, 3]; a[1] = 42; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn array_element_assignment_type_error() {
+    let src = r#"
+        fn main() { let mut a: [i32; 3] = [1, 2, 3]; a[1] = true; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    println!("{:?}", err);
+    assert!(err.contains("Type mismatch in assignment"), "err: {err}");
+}
+
+#[test]
+fn array_element_assignment_immutable_error() {
+    let src = r#"
+        fn main() { let a: [i32; 2] = [1, 2]; a[0] = 3; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    println!("{:?}", err);
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn struct_field_assignment_ok() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn main() { let mut p: Point = Point { x: 1, y: 2 }; p.x = 3; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn struct_field_assignment_type_error() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn main() { let mut p: Point = Point { x: 1, y: 2 }; p.x = true; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("Type mismatch in assignment"), "err: {err}");
+}
+
+#[test]
+fn struct_field_assignment_immutable_error() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn main() { let p: Point = Point { x: 1, y: 2 }; p.x = 3; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    println!("{:?}", err);
+    assert!(err.contains("immutable"), "err: {err}");
+}

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, usize};
+use std::{collections::HashMap, ops::Index, usize};
 
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
@@ -519,8 +519,8 @@ impl Analyzer {
                 }
             }
 
-            Eq => {
-                if let ExpressionNode::Identifier(token) = &*b.left_operand {
+            Eq => match &*b.left_operand {
+                ExpressionNode::Identifier(token) => {
                     let Some(symbol) = self.globe.lookup_var(&token.lexeme) else {
                         return Err(SemanticError::UndefinedIdentifier {
                             name: token.lexeme.clone(),
@@ -546,10 +546,99 @@ impl Analyzer {
                     }
 
                     Ok(symbol.ty.clone())
-                } else {
-                    Err(SemanticError::InvalidLValueType { line, column })
                 }
-            }
+                ExpressionNode::Index(IndexExprNode { array, index: _ }) => {
+                    if let ExpressionNode::Identifier(tok) = &**array {
+                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                            return Err(SemanticError::UndefinedIdentifier {
+                                name: tok.lexeme.clone(),
+                                line,
+                                column,
+                            });
+                        };
+                        if !symbol.mutable {
+                            return Err(SemanticError::AssignImmutableVar {
+                                name: tok.lexeme.clone(),
+                                line,
+                                column,
+                            });
+                        }
+
+                        if rt != lt {
+                            return Err(SemanticError::AssignTypeMismatched {
+                                expected: lt.clone(),
+                                found: rt,
+                                line,
+                                column,
+                            });
+                        }
+                        Ok(lt)
+                    } else {
+                        Err(SemanticError::InvalidLValueType { line, column })
+                    }
+                }
+                ExpressionNode::Member(MemberExprNode { object, field }) => {
+                    if let ExpressionNode::Identifier(tok) = &**object {
+                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                            return Err(SemanticError::UndefinedIdentifier {
+                                name: tok.lexeme.clone(),
+                                line,
+                                column,
+                            });
+                        };
+
+                        if !symbol.mutable {
+                            return Err(SemanticError::AssignImmutableVar {
+                                name: tok.lexeme.clone(),
+                                line,
+                                column,
+                            });
+                        }
+
+                        let RxType::Struct(struct_name) = symbol.ty.clone() else {
+                            return Err(SemanticError::Generic {
+                                msg: format!(
+                                    "Member assignment requires struct, found {}",
+                                    symbol.ty
+                                ),
+                                line,
+                                column,
+                            });
+                        };
+
+                        let Some(field_map) = self.globe.structs.get(&struct_name) else {
+                            return Err(SemanticError::UnknownStruct {
+                                name: struct_name,
+                                line,
+                                column,
+                            });
+                        };
+
+                        let Some(expected_ty) = field_map.get(&field.lexeme) else {
+                            return Err(SemanticError::UnknownStructField {
+                                name: struct_name,
+                                field: field.lexeme.clone(),
+                                line,
+                                column,
+                            });
+                        };
+
+                        if rt != *expected_ty {
+                            return Err(SemanticError::AssignTypeMismatched {
+                                expected: expected_ty.clone(),
+                                found: rt,
+                                line,
+                                column,
+                            });
+                        }
+
+                        Ok(expected_ty.clone())
+                    } else {
+                        Err(SemanticError::InvalidLValueType { line, column })
+                    }
+                }
+                _ => Err(SemanticError::InvalidLValueType { line, column }),
+            },
             _ => Err(SemanticError::Generic {
                 msg: "Unsupported binary operator".to_string(),
                 line,
@@ -737,17 +826,7 @@ impl Analyzer {
                 Ok(sig.return_type)
             }
             ExpressionNode::Identifier(token) => {
-                let callee_name = if let ExpressionNode::Identifier(token) = &*c.function {
-                    token.lexeme.clone()
-                } else {
-                    // Only support simple function call, and currently not handle the position information
-                    return Err(SemanticError::Generic {
-                        msg: "Only simple function call supported".to_string(),
-                        line: 0,
-                        column: 0,
-                    });
-                };
-
+                let callee_name = token.lexeme.clone();
                 let Some(sig) = self.globe.lookup_fn(&callee_name).cloned() else {
                     return Err(SemanticError::UnknownCallee {
                         name: callee_name,
