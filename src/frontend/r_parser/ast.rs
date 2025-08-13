@@ -6,6 +6,7 @@ pub enum AstNode {
     Function(FunctionNode),
     Statement(StatementNode),
     Expression(ExpressionNode),
+    Struct(StructDeclNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -18,6 +19,7 @@ pub enum TypeNode {
     String(Token),
     Unit,
     Tuple(Vec<TypeNode>),
+    Named(Token),
     Array {
         elem_type: Box<TypeNode>,
         size: Option<Token>,
@@ -51,6 +53,19 @@ pub struct BlockNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StructDeclNode {
+    pub struct_token: Token,
+    pub name: Token,
+    pub fields: Vec<StructFieldNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StructFieldNode {
+    pub name: Token,
+    pub type_annotation: TypeNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ArrayLiteralNode {
     pub elements: Vec<ExpressionNode>,
 }
@@ -58,6 +73,18 @@ pub struct ArrayLiteralNode {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TupleLiteralNode {
     pub elements: Vec<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StructLiteralNode {
+    pub name: Token,
+    pub fields: Vec<StructLiteralFieldNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StructLiteralFieldNode {
+    pub name: Token,
+    pub value: ExpressionNode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -97,6 +124,7 @@ pub enum ExpressionNode {
     Block(Box<BlockNode>),
     TupleLiteral(TupleLiteralNode),
     ArrayLiteral(ArrayLiteralNode),
+    StructLiteral(StructLiteralNode),
     // Complex
     Unary(UnaryExprNode),
     Binary(BinaryExprNode),
@@ -104,6 +132,7 @@ pub enum ExpressionNode {
     Index(IndexExprNode),
     If(Box<IfExprNode>),
     While(Box<WhileExprNode>),
+    Member(MemberExprNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -150,4 +179,10 @@ pub struct WhileExprNode {
     pub while_token: Token,
     pub condition: ExpressionNode,
     pub body: BlockNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MemberExprNode {
+    pub object: Box<ExpressionNode>,
+    pub field: Token,
 }

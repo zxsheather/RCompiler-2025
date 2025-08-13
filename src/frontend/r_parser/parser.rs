@@ -41,6 +41,7 @@ impl Parser {
 
     pub fn next_node(&mut self) -> ParseResult<AstNode> {
         match self.current_token().token_type {
+            TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
             _ => Ok(AstNode::Statement(self.parse_statement()?)),
         }
@@ -88,6 +89,10 @@ impl Parser {
             TokenType::Bool => {
                 self.advance();
                 Ok(TypeNode::Bool(token))
+            }
+            TokenType::Identifier => {
+                self.advance();
+                Ok(TypeNode::Named(token))
             }
             TokenType::LBracket => {
                 // [T; N] or [T]
@@ -162,6 +167,31 @@ impl Parser {
         Ok(BlockNode {
             stats: statements,
             final_expr,
+        })
+    }
+
+    fn parse_struct_delc(&mut self) -> ParseResult<StructDeclNode> {
+        let struct_token = self.expect_type(&TokenType::Struct)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        self.expect_type(&TokenType::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.check_type(&TokenType::RBrace) {
+            let field_name = self.expect_type(&TokenType::Identifier)?;
+            self.expect_type(&TokenType::Colon)?;
+            let field_type = self.parse_type()?;
+            fields.push(StructFieldNode {
+                name: field_name,
+                type_annotation: field_type,
+            });
+            if self.check_type(&TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(StructDeclNode {
+            struct_token,
+            name,
+            fields,
         })
     }
 
@@ -288,6 +318,19 @@ impl Parser {
             TokenType::Identifier => {
                 let tok = self.current_token().clone();
                 self.advance();
+                if self.check_type(&TokenType::LBrace) {
+                    if self.tokens.len() > self.index + 2 {
+                        let t1 = self.peek().token_type;
+                        let t2 = self.peek_n(2).token_type;
+                        if matches!(t1, TokenType::Identifier) && matches!(t2, TokenType::Colon) {
+                            let fields = self.parse_struct_literal_fields()?;
+                            return Ok(ExpressionNode::StructLiteral(StructLiteralNode {
+                                name: tok,
+                                fields,
+                            }));
+                        }
+                    }
+                }
                 ExpressionNode::Identifier(tok)
             }
             TokenType::IntegerLiteral => {
@@ -334,6 +377,16 @@ impl Parser {
                 lhs = ExpressionNode::Index(IndexExprNode {
                     array: Box::new(lhs),
                     index: Box::new(index),
+                });
+                continue;
+            }
+
+            if self.check_type(&TokenType::Dot) {
+                self.advance();
+                let field = self.expect_type(&TokenType::Identifier)?;
+                lhs = ExpressionNode::Member(MemberExprNode {
+                    object: Box::new(lhs),
+                    field,
                 });
                 continue;
             }
@@ -395,6 +448,28 @@ impl Parser {
             break;
         }
         Ok(args)
+    }
+
+    fn parse_struct_literal_fields(&mut self) -> ParseResult<Vec<StructLiteralFieldNode>> {
+        self.expect_type(&TokenType::LBrace);
+        let mut fields = Vec::new();
+        if self.check_type(&TokenType::RBrace) {
+            self.advance();
+            return Ok(fields);
+        }
+        loop {
+            let name = self.expect_type(&TokenType::Identifier)?;
+            self.expect_type(&TokenType::Colon);
+            let value = self.parse_expression()?;
+            fields.push(StructLiteralFieldNode { name, value });
+            if self.check_type(&TokenType::Comma) {
+                self.advance();
+                continue;
+            }
+            self.expect_type(&TokenType::RBrace)?;
+            break;
+        }
+        Ok(fields)
     }
 
     fn parse_if_expression(&mut self) -> ParseResult<ExpressionNode> {

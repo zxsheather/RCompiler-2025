@@ -197,4 +197,31 @@ pub enum SemanticError {
         line: usize,
         column: usize,
     },
+
+    #[error("Unknown struct '{name}' at line {line}, column {column}")]
+    UnknownStruct {
+        name: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error("Struct '{name}' field '{field}' not found at line {line}, column {column}")]
+    UnknownStructField {
+        name: String,
+        field: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Struct literal '{name}' field '{field}' type mismatch: expected {expected}, found {found}, at line {line}, column {column}"
+    )]
+    StructFieldTypeMismatch {
+        name: String,
+        field: String,
+        expected: RxType,
+        found: RxType,
+        line: usize,
+        column: usize,
+    },
 }

@@ -5,7 +5,8 @@ use crate::frontend::{
     r_parser::ast::{
         AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, IndexExprNode,
-        LetStatementNode, StatementNode, TupleLiteralNode, TypeNode, UnaryExprNode, WhileExprNode,
+        LetStatementNode, MemberExprNode, StatementNode, StructLiteralNode, TupleLiteralNode,
+        TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -47,6 +48,7 @@ pub struct FuncSig {
 pub struct Globe {
     scope_stack: Vec<Scope>,
     funcs: HashMap<String, FuncSig>,
+    structs: HashMap<String, HashMap<String, RxType>>,
 }
 
 impl Globe {
@@ -123,20 +125,33 @@ impl Analyzer {
 
     pub fn analyse_program(&mut self, nodes: &[AstNode]) -> SemanticResult<()> {
         for node in nodes {
-            if let AstNode::Function(func) = node {
-                let name = func.name.lexeme.clone();
-                let params: Vec<RxType> = func
-                    .param_list
-                    .params
-                    .iter()
-                    .map(|p| self.type_from_ann(p.type_annotation.as_ref(), &p.name))
-                    .collect::<SemanticResult<Vec<_>>>()?;
-                let ret = match &func.return_type {
-                    Some(t) => self.type_from_node(t)?,
-                    None => RxType::Unit,
-                };
+            match node {
+                AstNode::Function(func) => {
+                    let name = func.name.lexeme.clone();
+                    let params: Vec<RxType> = func
+                        .param_list
+                        .params
+                        .iter()
+                        .map(|p| self.type_from_ann(p.type_annotation.as_ref(), &p.name))
+                        .collect::<SemanticResult<Vec<_>>>()?;
+                    let ret = match &func.return_type {
+                        Some(t) => self.type_from_node(t)?,
+                        None => RxType::Unit,
+                    };
 
-                let _ = self.globe.declare_fn(name, params, ret, func.name.clone());
+                    let _ = self.globe.declare_fn(name, params, ret, func.name.clone());
+                }
+                AstNode::Struct(sd) => {
+                    let mut field_map = HashMap::new();
+                    for field in &sd.fields {
+                        let ty = self.type_from_node(&field.type_annotation)?;
+                        field_map.insert(field.name.lexeme.clone(), ty);
+                    }
+                    self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
+                }
+                _ => {
+                    // Do nothing in this pass
+                }
             }
         }
 
@@ -156,6 +171,10 @@ impl Analyzer {
                     self.globe.push_scope();
                     self.analyse_expression(expr)?;
                     self.globe.pop_scope();
+                }
+
+                AstNode::Struct(_) => {
+                    // Nothing to do in this pass
                 }
             }
         }
@@ -335,6 +354,8 @@ impl Analyzer {
             ExpressionNode::If(i) => Ok(self.analyse_if(i)?),
             ExpressionNode::While(w) => Ok(self.analyse_while(w)?),
             ExpressionNode::Call(c) => Ok(self.analyse_call(c)?),
+            ExpressionNode::Member(m) => Ok(self.analyse_member(m)?),
+            ExpressionNode::StructLiteral(s) => Ok(self.analyse_struct_literal(s)?),
         }
     }
 
@@ -382,7 +403,7 @@ impl Analyzer {
         let line = b.operator.position.line;
         let column = b.operator.position.column;
         match op_token {
-            Plus | Minus | Div | Percent | And | Or | Xor => {
+            Plus | Minus | Mul | Div | Percent | And | Or | Xor => {
                 if !lt.is_integer() {
                     Err(SemanticError::ArityMismatch {
                         operator: op_token.as_str().to_string(),
@@ -498,6 +519,62 @@ impl Analyzer {
                 column: 0,
             })
         }
+    }
+
+    fn analyse_member(&mut self, m: &MemberExprNode) -> SemanticResult<RxType> {
+        let obj_ty = self.analyse_expression(&m.object)?;
+        let line = m.field.position.line;
+        let column = m.field.position.column;
+        let RxType::Struct(name) = obj_ty else {
+            return Err(SemanticError::Generic {
+                msg: format!("Member access requires struct, found {}", obj_ty),
+                line,
+                column,
+            });
+        };
+        let Some(field_map) = self.globe.structs.get(&name) else {
+            return Err(SemanticError::UnknownStruct { name, line, column });
+        };
+        let Some(ty) = field_map.get(&m.field.lexeme) else {
+            return Err(SemanticError::UnknownStructField {
+                name,
+                field: m.field.lexeme.clone(),
+                line,
+                column,
+            });
+        };
+        Ok(ty.clone())
+    }
+
+    fn analyse_struct_literal(&mut self, s: &StructLiteralNode) -> SemanticResult<RxType> {
+        let name = s.name.lexeme.clone();
+        let line = s.name.position.line;
+        let column = s.name.position.column;
+        let Some(field_map) = self.globe.structs.get(&name).cloned() else {
+            return Err(SemanticError::UnknownStruct { name, line, column });
+        };
+        for field in s.fields.iter() {
+            let found = self.analyse_expression(&field.value)?;
+            let Some(expected) = field_map.get(&field.name.lexeme) else {
+                return Err(SemanticError::UnknownStructField {
+                    name: s.name.lexeme.clone(),
+                    field: field.name.lexeme.clone(),
+                    line,
+                    column,
+                });
+            };
+            if found != *expected {
+                return Err(SemanticError::StructFieldTypeMismatch {
+                    name: s.name.lexeme.clone(),
+                    field: field.name.lexeme.clone(),
+                    expected: expected.clone(),
+                    found,
+                    line,
+                    column,
+                });
+            }
+        }
+        Ok(RxType::Struct(s.name.lexeme.clone()))
     }
 
     fn analyse_if(&mut self, i: &IfExprNode) -> SemanticResult<RxType> {
@@ -616,6 +693,13 @@ impl Analyzer {
             TypeNode::Bool(_) => RxType::Bool,
             TypeNode::String(_) => RxType::String,
             TypeNode::Unit => RxType::Unit,
+            TypeNode::Tuple(tys) => {
+                let mut rxtypes = Vec::with_capacity(tys.len());
+                for ty in tys {
+                    rxtypes.push(self.type_from_node(ty)?);
+                }
+                RxType::Tuple(rxtypes)
+            }
             TypeNode::Array { elem_type, size } => {
                 let elem_ty = self.type_from_node(&elem_type)?;
                 let len = if let Some(tok) = size {
@@ -625,7 +709,18 @@ impl Analyzer {
                 };
                 RxType::Array(Box::new(elem_ty), len)
             }
-            _ => RxType::Unit,
+            TypeNode::Named(token) => {
+                let name = token.lexeme.clone();
+                if self.globe.structs.contains_key(&name) {
+                    RxType::Struct(name)
+                } else {
+                    return Err(SemanticError::UnknownType {
+                        name,
+                        line: token.position.line,
+                        column: token.position.column,
+                    });
+                }
+            }
         })
     }
 }

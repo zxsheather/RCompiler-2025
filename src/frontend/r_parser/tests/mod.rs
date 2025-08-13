@@ -349,3 +349,14 @@ fn tuple_literal_and_type_parsing() {
         _ => panic!("expected function"),
     }
 }
+
+#[test]
+fn struct_decl_and_literal_and_member() {
+    let nodes = parse_nodes(
+        r#"
+        struct Point { x: i32, y: i32 }
+        fn main() { let p: Point = Point { x: 1, y: 2 }; p.x; }
+        "#,
+    );
+    assert!(nodes.len() >= 2);
+}

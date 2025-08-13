@@ -80,3 +80,42 @@ fn mixed_array_literal_error() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("Mixed typed array"), "err: {err}");
 }
+
+#[test]
+fn tuple_types_flow() {
+    let src = r#"
+        fn make() -> (i32, bool) { (1, true) }
+        fn main() {
+            let t: (i32, bool) = make();
+        }
+    "#;
+    // let err = analyze_src(src).unwrap_err();
+    // println!("{}", err);
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn unit_tuple_is_unit() {
+    let src = r#"fn main() { let x = (); }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn struct_type_flow_ok() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+    fn id(p: Point) -> Point { p }
+    fn main() { let p: Point = id(Point { x: 1, y: 2 }); let v = p.x; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn struct_field_type_mismatch() {
+    let src = r#"
+        struct S { a: i32 }
+        fn main() { let s: S = S { a: true }; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("type mismatch"), "err: {err}");
+}
