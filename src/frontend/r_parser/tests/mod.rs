@@ -360,3 +360,56 @@ fn struct_decl_and_literal_and_member() {
     );
     assert!(nodes.len() >= 2);
 }
+
+#[test]
+fn impl_block_and_method_call_parse() {
+    let nodes = parse_nodes(
+        r#"
+        struct Point { x: i32, y: i32 }
+        impl Point { fn sum(self: Point) -> i32 { self.x + self.y } }
+        fn main() { let p: Point = Point { x: 1, y: 2 }; p.sum(); }
+        "#,
+    );
+    assert!(nodes.len() >= 3);
+    // The second node should be an impl block with one method named 'sum'
+    match &nodes[1] {
+        AstNode::Impl(ib) => {
+            assert_eq!(ib.name.lexeme, "Point");
+            assert_eq!(ib.methods.len(), 1);
+            let m = &ib.methods[0];
+            assert_eq!(m.name.lexeme, "sum");
+            assert_eq!(m.param_list.params.len(), 1);
+            let p0 = &m.param_list.params[0];
+            assert_eq!(p0.name.lexeme, "self");
+            // self parameter should be annotated to the impl type
+            match p0.type_annotation.as_ref().unwrap() {
+                TypeNode::Named(t) => assert_eq!(t.lexeme, "Point"),
+                _ => panic!("self param should be named type Point"),
+            }
+        }
+        other => panic!("expected impl block, got {:?}", other),
+    }
+}
+
+#[test]
+fn static_method_parse() {
+    let nodes = parse_nodes(
+        r#"
+        struct Point { x: i32, y: i32 }
+        impl Point { fn make(x: i32, y: i32) -> Point { Point { x: x, y: y } } }
+        fn main() { let p: Point = Point::make(1, 2); }
+        "#,
+    );
+    assert!(nodes.len() >= 3);
+}
+
+#[test]
+fn struct_literal_shorthand_parse() {
+    let nodes = parse_nodes(
+        r#"
+        struct Point { x: i32, y: i32 }
+        fn main() { let p: Point = Point { x, y }; }
+        "#,
+    );
+    assert!(nodes.len() >= 2);
+}

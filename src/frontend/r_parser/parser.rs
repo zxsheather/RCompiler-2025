@@ -43,6 +43,7 @@ impl Parser {
         match self.current_token().token_type {
             TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
+            TokenType::Impl => Ok(AstNode::Impl(self.parse_impl_block()?)),
             _ => Ok(AstNode::Statement(self.parse_statement()?)),
         }
     }
@@ -273,7 +274,7 @@ impl Parser {
         let mut lhs = match self.current_token().token_type {
             TokenType::Plus | TokenType::Minus | TokenType::Not | TokenType::Tilde => {
                 let op = self.current_token().clone();
-                let r_bp = 25; // prefix binds tighter than multiplicative
+                let r_bp = 135; // prefix binds tighter than multiplicative
                 self.advance();
                 let rhs = self.parse_expr_bp(r_bp)?;
                 ExpressionNode::Unary(UnaryExprNode {
@@ -318,20 +319,28 @@ impl Parser {
             TokenType::Identifier => {
                 let tok = self.current_token().clone();
                 self.advance();
-                if self.check_type(&TokenType::LBrace) {
-                    if self.tokens.len() > self.index + 2 {
-                        let t1 = self.peek().token_type;
-                        let t2 = self.peek_n(2).token_type;
-                        if matches!(t1, TokenType::Identifier) && matches!(t2, TokenType::Colon) {
+
+                if self.check_type(&TokenType::ColonColon) {
+                    self.advance();
+                    let member = self.expect_type(&TokenType::Identifier)?;
+                    ExpressionNode::StaticMember(StaticMemberExprNode {
+                        type_name: tok,
+                        member: member,
+                    })
+                } else if self.check_type(&TokenType::LBrace) {
+                    if let Some(t1) = self.peek_safe() {
+                        if matches!(t1.token_type, TokenType::Identifier) {
                             let fields = self.parse_struct_literal_fields()?;
-                            return Ok(ExpressionNode::StructLiteral(StructLiteralNode {
-                                name: tok,
-                                fields,
-                            }));
+                            ExpressionNode::StructLiteral(StructLiteralNode { name: tok, fields })
+                        } else {
+                            ExpressionNode::Identifier(tok)
                         }
+                    } else {
+                        ExpressionNode::Identifier(tok)
                     }
+                } else {
+                    ExpressionNode::Identifier(tok)
                 }
-                ExpressionNode::Identifier(tok)
             }
             TokenType::IntegerLiteral => {
                 let tok = self.current_token().clone();
@@ -347,6 +356,11 @@ impl Parser {
                 let tok = self.current_token().clone();
                 self.advance();
                 ExpressionNode::BoolLiteral(tok)
+            }
+            TokenType::SelfLower => {
+                let tok = self.current_token().clone();
+                self.advance();
+                ExpressionNode::Identifier(tok)
             }
             _ => {
                 let token = self.current_token();
@@ -451,7 +465,7 @@ impl Parser {
     }
 
     fn parse_struct_literal_fields(&mut self) -> ParseResult<Vec<StructLiteralFieldNode>> {
-        self.expect_type(&TokenType::LBrace);
+        self.expect_type(&TokenType::LBrace)?;
         let mut fields = Vec::new();
         if self.check_type(&TokenType::RBrace) {
             self.advance();
@@ -459,8 +473,12 @@ impl Parser {
         }
         loop {
             let name = self.expect_type(&TokenType::Identifier)?;
-            self.expect_type(&TokenType::Colon);
-            let value = self.parse_expression()?;
+            let value = if self.check_type(&TokenType::Colon) {
+                self.advance();
+                self.parse_expression()?
+            } else {
+                ExpressionNode::Identifier(name.clone())
+            };
             fields.push(StructLiteralFieldNode { name, value });
             if self.check_type(&TokenType::Comma) {
                 self.advance();
@@ -470,6 +488,31 @@ impl Parser {
             break;
         }
         Ok(fields)
+    }
+
+    fn parse_impl_block(&mut self) -> ParseResult<ImplNode> {
+        let impl_token = self.expect_type(&TokenType::Impl)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        self.expect_type(&TokenType::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check_type(&TokenType::RBrace) {
+            let mut method = self.parse_function()?;
+            if let Some(first) = method.param_list.params.get_mut(0) {
+                if std::mem::discriminant(&first.name.token_type)
+                    == std::mem::discriminant(&TokenType::SelfLower)
+                    && first.type_annotation.is_none()
+                {
+                    first.type_annotation = Some(TypeNode::Named(name.clone()));
+                }
+            }
+            methods.push(method);
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(ImplNode {
+            impl_token,
+            name,
+            methods,
+        })
     }
 
     fn parse_if_expression(&mut self) -> ParseResult<ExpressionNode> {
@@ -532,7 +575,18 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> ParseResult<ParamNode> {
-        let name = self.expect_type(&TokenType::Identifier)?;
+        let name = if self.check_type(&TokenType::Identifier) {
+            self.expect_type(&TokenType::Identifier)?
+        } else if self.check_type(&TokenType::SelfLower) {
+            self.expect_type(&TokenType::SelfLower)?
+        } else {
+            let token = self.current_token();
+            return Err(ParseError::Generic {
+                message: format!("Expected parameter name, found {:?}", token.token_type),
+                line: token.position.line,
+                column: token.position.column,
+            });
+        };
         let type_annotation = if self.check_type(&TokenType::Colon) {
             self.advance();
             Some(self.parse_type()?)

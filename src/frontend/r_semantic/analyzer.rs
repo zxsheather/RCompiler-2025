@@ -49,6 +49,8 @@ pub struct Globe {
     scope_stack: Vec<Scope>,
     funcs: HashMap<String, FuncSig>,
     structs: HashMap<String, HashMap<String, RxType>>,
+    methods: HashMap<(String, String), FuncSig>, // (struct, method) -> signature
+    static_methods: HashMap<(String, String), FuncSig>, // no self
 }
 
 impl Globe {
@@ -149,6 +151,47 @@ impl Analyzer {
                     }
                     self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
                 }
+                AstNode::Impl(impl_node) => {
+                    let st_name = impl_node.name.lexeme.clone();
+                    for m in &impl_node.methods {
+                        let mut param_types = Vec::new();
+                        for p in m.param_list.params.iter() {
+                            // The type of self is the struct itself
+                            let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
+                            param_types.push(ty);
+                        }
+                        let return_type = match &m.return_type {
+                            Some(t) => self.type_from_node(t)?,
+                            None => RxType::Unit,
+                        };
+
+                        let is_instance = m
+                            .param_list
+                            .params
+                            .first()
+                            .map(|p| matches!(p.name.token_type, TokenType::SelfLower))
+                            .unwrap_or(false);
+                        if is_instance {
+                            self.globe.methods.insert(
+                                (st_name.clone(), m.name.lexeme.clone()),
+                                FuncSig {
+                                    param_types,
+                                    return_type,
+                                    token: m.name.clone(),
+                                },
+                            );
+                        } else {
+                            self.globe.static_methods.insert(
+                                (st_name.clone(), m.name.lexeme.clone()),
+                                FuncSig {
+                                    param_types,
+                                    return_type,
+                                    token: m.name.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
                 _ => {
                     // Do nothing in this pass
                 }
@@ -159,6 +202,12 @@ impl Analyzer {
             match node {
                 AstNode::Function(func) => {
                     self.analyse_function(func)?;
+                }
+
+                AstNode::Impl(i) => {
+                    for m in i.methods.iter() {
+                        self.analyse_function(m)?;
+                    }
                 }
 
                 AstNode::Statement(stmt) => {
@@ -355,7 +404,17 @@ impl Analyzer {
             ExpressionNode::While(w) => Ok(self.analyse_while(w)?),
             ExpressionNode::Call(c) => Ok(self.analyse_call(c)?),
             ExpressionNode::Member(m) => Ok(self.analyse_member(m)?),
-            ExpressionNode::StructLiteral(s) => Ok(self.analyse_struct_literal(s)?),
+            ExpressionNode::StructLiteral(sl) => Ok(self.analyse_struct_literal(sl)?),
+            ExpressionNode::StaticMember(sm) => {
+                if !self.globe.structs.contains_key(&sm.type_name.lexeme) {
+                    return Err(SemanticError::UnknownStruct {
+                        name: sm.type_name.lexeme.clone(),
+                        line: sm.type_name.position.line,
+                        column: sm.type_name.position.column,
+                    });
+                }
+                Ok(RxType::Unit)
+            }
         }
     }
 
@@ -626,51 +685,156 @@ impl Analyzer {
     }
 
     fn analyse_call(&mut self, c: &CallExprNode) -> SemanticResult<RxType> {
-        let callee_name = if let ExpressionNode::Identifier(token) = &*c.function {
-            token.lexeme.clone()
-        } else {
-            // Only support simple function call, and currently not handle the position information
-            return Err(SemanticError::Generic {
-                msg: "Only simple function call supported".to_string(),
-                line: 0,
-                column: 0,
-            });
-        };
-
-        let Some(sig) = self.globe.lookup_fn(&callee_name).cloned() else {
-            return Err(SemanticError::UnknownCallee {
-                name: callee_name,
-                line: 0,
-                column: 0,
-            });
-        };
-
-        let line = sig.token.position.line;
-        let column = sig.token.position.column;
-        if sig.param_types.len() != c.args.len() {
-            return Err(SemanticError::ArgsNumMismatched {
-                callee: callee_name,
-                expected: sig.param_types.len(),
-                found: c.args.len(),
-                line,
-                column,
-            });
-        }
-
-        for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
-            let at = self.analyse_expression(arg)?;
-            if *pt != at {
-                return Err(SemanticError::ArgTypeMismatched {
-                    callee: callee_name,
-                    index: i,
-                    expected: pt.clone(),
-                    found: at.clone(),
-                    line,
-                    column,
-                });
+        match &*c.function {
+            ExpressionNode::StaticMember(sm) => {
+                let st = sm.type_name.lexeme.clone();
+                let line = sm.type_name.position.line;
+                let column = sm.type_name.position.column;
+                if !self.globe.structs.contains_key(&st) {
+                    return Err(SemanticError::UnknownStruct {
+                        name: st,
+                        line,
+                        column,
+                    });
+                }
+                let method_name = sm.member.lexeme.clone();
+                let Some(sig) = self
+                    .globe
+                    .static_methods
+                    .get(&(st.clone(), method_name.clone()))
+                    .cloned()
+                else {
+                    return Err(SemanticError::UnknownCallee {
+                        name: format!("{}::{}", sm.type_name.lexeme, method_name),
+                        line: sm.member.position.line,
+                        column: sm.member.position.column,
+                    });
+                };
+                let line = sig.token.position.line;
+                let column = sig.token.position.column;
+                if sig.param_types.len() != c.args.len() {
+                    return Err(SemanticError::ArgsNumMismatched {
+                        callee: format!("{}::{}", st, method_name),
+                        expected: sig.param_types.len(),
+                        found: c.args.len(),
+                        line,
+                        column,
+                    });
+                }
+                for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
+                    let at = self.analyse_expression(arg)?;
+                    if *pt != at {
+                        return Err(SemanticError::ArgTypeMismatched {
+                            callee: format!("{}::{}", st, method_name),
+                            index: i,
+                            expected: pt.clone(),
+                            found: at.clone(),
+                            line,
+                            column,
+                        });
+                    }
+                }
+                Ok(sig.return_type)
             }
+            ExpressionNode::Identifier(token) => {
+                let callee_name = if let ExpressionNode::Identifier(token) = &*c.function {
+                    token.lexeme.clone()
+                } else {
+                    // Only support simple function call, and currently not handle the position information
+                    return Err(SemanticError::Generic {
+                        msg: "Only simple function call supported".to_string(),
+                        line: 0,
+                        column: 0,
+                    });
+                };
+
+                let Some(sig) = self.globe.lookup_fn(&callee_name).cloned() else {
+                    return Err(SemanticError::UnknownCallee {
+                        name: callee_name,
+                        line: 0,
+                        column: 0,
+                    });
+                };
+
+                let line = sig.token.position.line;
+                let column = sig.token.position.column;
+                if sig.param_types.len() != c.args.len() {
+                    return Err(SemanticError::ArgsNumMismatched {
+                        callee: callee_name,
+                        expected: sig.param_types.len(),
+                        found: c.args.len(),
+                        line,
+                        column,
+                    });
+                }
+
+                for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
+                    let at = self.analyse_expression(arg)?;
+                    if *pt != at {
+                        return Err(SemanticError::ArgTypeMismatched {
+                            callee: callee_name,
+                            index: i,
+                            expected: pt.clone(),
+                            found: at.clone(),
+                            line,
+                            column,
+                        });
+                    }
+                }
+                Ok(sig.return_type)
+            }
+            ExpressionNode::Member(MemberExprNode { object, field }) => {
+                let recv_ty = self.analyse_expression(&object)?;
+                let RxType::Struct(struct_name) = recv_ty.clone() else {
+                    return Err(SemanticError::Generic {
+                        msg: format!("Method call receiver must be struct, found {}", recv_ty),
+                        line: field.position.line,
+                        column: field.position.column,
+                    });
+                };
+                let method_name = field.lexeme.clone();
+                let Some(sig) = self
+                    .globe
+                    .methods
+                    .get(&(struct_name.clone(), method_name.clone()))
+                    .cloned()
+                else {
+                    return Err(SemanticError::UnknownCallee {
+                        name: format!("{}::{}", struct_name, method_name),
+                        line: field.position.line,
+                        column: field.position.column,
+                    });
+                };
+                if sig.param_types.len() != c.args.len() + 1 {
+                    return Err(SemanticError::ArgsNumMismatched {
+                        callee: format!("{}.{}", struct_name, method_name),
+                        expected: sig.param_types.len() - 1,
+                        found: c.args.len(),
+                        line: field.position.line,
+                        column: field.position.column,
+                    });
+                }
+                for (i, (pt, arg)) in sig.param_types.iter().skip(1).zip(&c.args).enumerate() {
+                    let at = self.analyse_expression(arg)?;
+                    if *pt != at {
+                        return Err(SemanticError::ArgTypeMismatched {
+                            callee: format!("{}.{}", struct_name, method_name),
+                            index: i + 1,
+                            expected: pt.clone(),
+                            found: at.clone(),
+                            line: field.position.line,
+                            column: field.position.column,
+                        });
+                    }
+                }
+                Ok(sig.return_type)
+            }
+            _ => Err(SemanticError::Generic {
+                msg: "Only simple function or method calls are supported".to_string(),
+                line: 0,
+                column: 0,
+            }),
         }
-        Ok(sig.return_type)
     }
 
     fn type_from_ann(&self, ann: Option<&TypeNode>, name_tok: &Token) -> SemanticResult<RxType> {

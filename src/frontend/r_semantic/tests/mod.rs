@@ -119,3 +119,60 @@ fn struct_field_type_mismatch() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("type mismatch"), "err: {err}");
 }
+
+#[test]
+fn struct_methods_ok() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point {
+            fn sum(self: Point) -> i32 { self.x + self.y }
+            fn add_x(self: Point, v: i32) -> i32 { self.x + v }
+        }
+        fn main() { let p: Point = Point { x: 1, y: 2 }; let s: i32 = p.sum(); let t: i32 = p.add_x(3); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn struct_method_wrong_args() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point { fn add_x(self: Point, v: i32) -> i32 { self.x + v } }
+        fn main() { let p: Point = Point { x: 1, y: 2 }; let s = p.add_x(true); }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    println!("{:?}", err);
+    assert!(err.contains("expected 'i32'"), "err: {err}");
+}
+
+#[test]
+fn static_methods_ok() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point { fn make(x: i32, y: i32) -> Point { Point { x: x, y: y } } }
+        fn main() { let p: Point = Point::make(1, 2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn static_method_wrong_args() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point { fn make(x: i32, y: i32) -> Point { Point { x: x, y: y } } }
+        fn main() { let p: Point = Point::make(true, 2); }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    println!("{:?}", err);
+    assert!(err.contains("expected 'i32'"), "err: {err}");
+}
+
+#[test]
+fn struct_literal_shorthand_semantic() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn id(x: i32) -> i32 { x }
+        fn main() { let x: i32 = 1; let y: i32 = 2; let p: Point = Point { x, y }; let a: i32 = id(p.x); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}

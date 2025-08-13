@@ -7,6 +7,7 @@ pub enum AstNode {
     Statement(StatementNode),
     Expression(ExpressionNode),
     Struct(StructDeclNode),
+    Impl(ImplNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -57,6 +58,13 @@ pub struct StructDeclNode {
     pub struct_token: Token,
     pub name: Token,
     pub fields: Vec<StructFieldNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImplNode {
+    pub impl_token: Token,
+    pub name: Token,
+    pub methods: Vec<FunctionNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -125,6 +133,7 @@ pub enum ExpressionNode {
     TupleLiteral(TupleLiteralNode),
     ArrayLiteral(ArrayLiteralNode),
     StructLiteral(StructLiteralNode),
+    StaticMember(StaticMemberExprNode),
     // Complex
     Unary(UnaryExprNode),
     Binary(BinaryExprNode),
@@ -185,4 +194,10 @@ pub struct WhileExprNode {
 pub struct MemberExprNode {
     pub object: Box<ExpressionNode>,
     pub field: Token,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StaticMemberExprNode {
+    pub type_name: Token,
+    pub member: Token,
 }
