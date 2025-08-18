@@ -22,7 +22,7 @@ mod tests {
     fn test_identifiers() {
         let mut lexer = Lexer::new("variable_name CamelCase".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        println!("{:?}", tokens);
+        // println!("{:?}", tokens);
 
         assert_eq!(tokens.len(), 3); // 2 identifiers + EOF
         assert_eq!(tokens[0].token_type, TokenType::Identifier);
@@ -56,7 +56,7 @@ mod tests {
     fn test_string_literals() {
         let mut lexer = Lexer::new(r#""hello" "world\n" b"bytes" r"raw""#.to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        println!("{:?}", tokens);
+        // println!("{:?}", tokens);
         assert_eq!(tokens.len(), 5); // 4 strings + EOF
         assert_eq!(tokens[0].token_type, TokenType::StringLiteral);
         assert_eq!(tokens[0].lexeme, r#""hello""#);
@@ -142,7 +142,7 @@ mod tests {
     fn test_position_tracking() {
         let mut lexer = Lexer::new("fn\nmain() {\n    let x = 42;\n}".to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();
-        println!("{:?}", tokens);
+        // println!("{:?}", tokens);
         assert_eq!(tokens[0].position.line, 1);
         assert_eq!(tokens[0].position.column, 1);
         assert_eq!(tokens[1].position.line, 2); // main on line 2

@@ -8,6 +8,8 @@ pub enum AstNode {
     Expression(ExpressionNode),
     Struct(StructDeclNode),
     Impl(ImplNode),
+    Trait(TraitDeclNode),
+    ImplTrait(ImplTraitBlockNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -64,6 +66,30 @@ pub struct StructDeclNode {
 pub struct ImplNode {
     pub impl_token: Token,
     pub name: Token,
+    pub methods: Vec<FunctionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraitDeclNode {
+    pub trait_token: Token,
+    pub name: Token,
+    pub methods: Vec<TraitMethodSigNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TraitMethodSigNode {
+    pub fn_token: Token,
+    pub name: Token,
+    pub param_list: ParamListNode,
+    pub return_type: Option<TypeNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ImplTraitBlockNode {
+    pub impl_token: Token,
+    pub trait_name: Token,
+    pub for_token: Token,
+    pub type_name: Token,
     pub methods: Vec<FunctionNode>,
 }
 

@@ -171,7 +171,9 @@ pub enum SemanticError {
         column: usize,
     },
 
-    #[error("Left-hand side of '=' must be an identifier/array[index]/struct.field, at line {line}, column {column}")]
+    #[error(
+        "Left-hand side of '=' must be an identifier/array[index]/struct.field, at line {line}, column {column}"
+    )]
     InvalidLValueType { line: usize, column: usize },
 
     #[error("{msg}, at line {line}, column {column}")]
@@ -221,6 +223,57 @@ pub enum SemanticError {
         field: String,
         expected: RxType,
         found: RxType,
+        line: usize,
+        column: usize,
+    },
+
+    #[error("Unknown trait '{name}' at line {line}, column {column}")]
+    UnknownTrait {
+        name: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Method '{method}' in impl of trait '{trait_name}' for type '{type_name}' not found in trait at line {line}, column {column}"
+    )]
+    ImplMethodNotInTrait {
+        trait_name: String,
+        type_name: String,
+        method: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Impl of trait '{trait_name}' for type '{type_name}' is missing method '{method}' at line {line}, column {column}"
+    )]
+    MissingTraitImplMethod {
+        trait_name: String,
+        type_name: String,
+        method: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Signature mismatch for method '{method}' in impl of trait '{trait_name}' for type '{type_name}': {detail} at line {line}, column {column}"
+    )]
+    TraitMethodSignatureMismatch {
+        trait_name: String,
+        type_name: String,
+        method: String,
+        detail: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Duplicated trait implementation for '{trait_name}' on type '{type_name}' at line {line}, column {column}"
+    )]
+    DuplicatedTraitImpl {
+        trait_name: String,
+        type_name: String,
         line: usize,
         column: usize,
     },

@@ -41,11 +41,82 @@ impl Parser {
 
     pub fn next_node(&mut self) -> ParseResult<AstNode> {
         match self.current_token().token_type {
+            TokenType::Trait => Ok(AstNode::Trait(self.parse_trait_decl()?)),
             TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
-            TokenType::Impl => Ok(AstNode::Impl(self.parse_impl_block()?)),
+            TokenType::Impl => {
+                if let Some(tok) = self.peek_n_safe(2) {
+                    if matches!(tok.token_type, TokenType::For) {
+                        Ok(AstNode::ImplTrait(self.parse_impl_trait_block()?))
+                    } else {
+                        Ok(AstNode::Impl(self.parse_impl_block()?))
+                    }
+                } else {
+                    Ok(AstNode::Impl(self.parse_impl_block()?))
+                }
+            }
             _ => Ok(AstNode::Statement(self.parse_statement()?)),
         }
+    }
+
+    fn parse_trait_decl(&mut self) -> ParseResult<TraitDeclNode> {
+        let trait_token = self.expect_type(&TokenType::Trait)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        self.expect_type(&TokenType::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check_type(&TokenType::RBrace) {
+            let fn_token = self.expect_type(&TokenType::Fn)?;
+            let method_name = self.expect_type(&TokenType::Identifier)?;
+            let params = self.parse_param_list()?;
+            let return_type = if self.check_type(&TokenType::RArrow) {
+                self.advance();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            self.expect_type(&TokenType::Semicolon)?;
+            methods.push(TraitMethodSigNode {
+                fn_token,
+                name: method_name,
+                param_list: params,
+                return_type,
+            });
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(TraitDeclNode {
+            trait_token,
+            name,
+            methods,
+        })
+    }
+
+    fn parse_impl_trait_block(&mut self) -> ParseResult<ImplTraitBlockNode> {
+        let impl_token = self.expect_type(&TokenType::Impl)?;
+        let trait_name = self.expect_type(&TokenType::Identifier)?;
+        let for_token = self.expect_type(&TokenType::For)?;
+        let type_name = self.expect_type(&TokenType::Identifier)?;
+        self.expect_type(&TokenType::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check_type(&TokenType::RBrace) {
+            let mut method = self.parse_function()?;
+            if let Some(first) = method.param_list.params.get_mut(0) {
+                if std::mem::discriminant(&first.name.token_type)
+                    == std::mem::discriminant(&TokenType::SelfLower)
+                    && first.type_annotation.is_none()
+                {
+                    first.type_annotation = Some(TypeNode::Named(type_name.clone()));
+                }
+            }
+            methods.push(method);
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(ImplTraitBlockNode {
+            impl_token,
+            trait_name,
+            for_token,
+            type_name,
+            methods,
+        })
     }
 
     fn parse_function(&mut self) -> ParseResult<FunctionNode> {
@@ -631,8 +702,8 @@ impl Parser {
         self.tokens.get(self.index + 1).expect("Index out of range")
     }
 
-    fn peek_n(&self, n: usize) -> &Token {
-        self.tokens.get(self.index + n).expect("Index out of range")
+    fn peek_n_safe(&self, n: usize) -> Option<&Token> {
+        self.tokens.get(self.index + n)
     }
 
     fn peek_safe(&self) -> Option<&Token> {

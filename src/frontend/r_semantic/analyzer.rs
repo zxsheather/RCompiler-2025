@@ -4,9 +4,9 @@ use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{
         AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
-        ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, IndexExprNode,
-        LetStatementNode, MemberExprNode, StatementNode, StructLiteralNode, TupleLiteralNode,
-        TypeNode, UnaryExprNode, WhileExprNode,
+        ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
+        IndexExprNode, LetStatementNode, MemberExprNode, StatementNode, StructLiteralNode,
+        TraitDeclNode, TupleLiteralNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -42,6 +42,14 @@ pub struct FuncSig {
     param_types: Vec<RxType>,
     return_type: RxType,
     token: Token,
+    self_kind: SelfKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelfKind {
+    None,
+    Owned { ty: RxType },
+    TraitSelf, // abstract self for trait
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -49,8 +57,10 @@ pub struct Globe {
     scope_stack: Vec<Scope>,
     funcs: HashMap<String, FuncSig>,
     structs: HashMap<String, HashMap<String, RxType>>,
-    methods: HashMap<(String, String), FuncSig>, // (struct, method) -> signature
+    methods: HashMap<(String, String), FuncSig>, // (struct, method) -> sig
     static_methods: HashMap<(String, String), FuncSig>, // no self
+    traits: HashMap<String, HashMap<String, FuncSig>>, // trait -> method -> sig
+    impl_traits: HashMap<String, Vec<String>>,   // struct -> traits
 }
 
 impl Globe {
@@ -104,6 +114,7 @@ impl Globe {
                 param_types: params,
                 return_type: ret,
                 token: tok,
+                self_kind: SelfKind::None,
             },
         );
         Ok(())
@@ -150,50 +161,29 @@ impl Analyzer {
                         field_map.insert(field.name.lexeme.clone(), ty);
                     }
                     self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
+                    self.globe
+                        .impl_traits
+                        .insert(sd.name.lexeme.clone(), Vec::new());
                 }
-                AstNode::Impl(impl_node) => {
-                    let st_name = impl_node.name.lexeme.clone();
-                    for m in &impl_node.methods {
-                        let mut param_types = Vec::new();
-                        for p in m.param_list.params.iter() {
-                            // The type of self is the struct itself
-                            let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
-                            param_types.push(ty);
-                        }
-                        let return_type = match &m.return_type {
-                            Some(t) => self.type_from_node(t)?,
-                            None => RxType::Unit,
-                        };
-
-                        let is_instance = m
-                            .param_list
-                            .params
-                            .first()
-                            .map(|p| matches!(p.name.token_type, TokenType::SelfLower))
-                            .unwrap_or(false);
-                        if is_instance {
-                            self.globe.methods.insert(
-                                (st_name.clone(), m.name.lexeme.clone()),
-                                FuncSig {
-                                    param_types,
-                                    return_type,
-                                    token: m.name.clone(),
-                                },
-                            );
-                        } else {
-                            self.globe.static_methods.insert(
-                                (st_name.clone(), m.name.lexeme.clone()),
-                                FuncSig {
-                                    param_types,
-                                    return_type,
-                                    token: m.name.clone(),
-                                },
-                            );
-                        }
-                    }
+                AstNode::Trait(td) => {
+                    self.declare_trait(td)?;
                 }
                 _ => {
                     // Do nothing in this pass
+                }
+            }
+        }
+
+        for node in nodes {
+            match node {
+                AstNode::Impl(impl_node) => {
+                    self.analyse_impl_struct(impl_node)?;
+                }
+                AstNode::ImplTrait(it) => {
+                    self.analyse_impl_trait(it)?;
+                }
+                _ => {
+                    // Nothing to do in this pass
                 }
             }
         }
@@ -222,11 +212,190 @@ impl Analyzer {
                     self.globe.pop_scope();
                 }
 
-                AstNode::Struct(_) => {
+                _ => {
                     // Nothing to do in this pass
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn declare_trait(&mut self, td: &TraitDeclNode) -> SemanticResult<()> {
+        let mut methods = HashMap::new();
+        for m in &td.methods {
+            // Temporarily requires parameters containing self
+            if m.param_list.params.is_empty()
+                || !matches!(m.param_list.params[0].name.token_type, TokenType::SelfLower)
+            {
+                return Err(SemanticError::TraitMethodSignatureMismatch {
+                    trait_name: td.name.lexeme.clone(),
+                    type_name: "<unknown>".to_string(),
+                    method: m.name.lexeme.clone(),
+                    detail: "first parameter must be 'self'".to_string(),
+                    line: m.name.position.line,
+                    column: m.name.position.column,
+                });
+            }
+
+            let mut param_types = Vec::new();
+            for p in m.param_list.params.iter().skip(1) {
+                let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
+                param_types.push(ty);
+            }
+            let return_type = match &m.return_type {
+                Some(t) => self.type_from_node(t)?,
+                None => RxType::Unit,
+            };
+            methods.insert(
+                m.name.lexeme.clone(),
+                FuncSig {
+                    param_types,
+                    return_type,
+                    token: m.name.clone(),
+                    self_kind: SelfKind::TraitSelf,
+                },
+            );
+        }
+        self.globe.traits.insert(td.name.lexeme.clone(), methods);
+        Ok(())
+    }
+
+    fn analyse_impl_struct(&mut self, impl_node: &ImplNode) -> SemanticResult<()> {
+        let st_name = impl_node.name.lexeme.clone();
+        if !self.globe.structs.contains_key(&st_name) {
+            return Err(SemanticError::UnknownStruct {
+                name: st_name,
+                line: impl_node.name.position.line,
+                column: impl_node.name.position.column,
+            });
+        }
+        for m in &impl_node.methods {
+            let mut param_types = Vec::new();
+            for p in m.param_list.params.iter() {
+                // The type of self is the struct itself
+                let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
+                param_types.push(ty);
+            }
+            let return_type = match &m.return_type {
+                Some(t) => self.type_from_node(t)?,
+                None => RxType::Unit,
+            };
+
+            let is_instance = m
+                .param_list
+                .params
+                .first()
+                .map(|p| matches!(p.name.token_type, TokenType::SelfLower))
+                .unwrap_or(false);
+            if is_instance {
+                let mut rest_params = param_types.clone();
+                rest_params.remove(0);
+                self.globe.methods.insert(
+                    (st_name.clone(), m.name.lexeme.clone()),
+                    FuncSig {
+                        param_types: rest_params,
+                        return_type,
+                        token: m.name.clone(),
+                        self_kind: SelfKind::Owned {
+                            ty: RxType::Struct(st_name.clone()),
+                        },
+                    },
+                );
+            } else {
+                self.globe.static_methods.insert(
+                    (st_name.clone(), m.name.lexeme.clone()),
+                    FuncSig {
+                        param_types,
+                        return_type,
+                        token: m.name.clone(),
+                        self_kind: SelfKind::None,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn analyse_impl_trait(&mut self, it: &ImplTraitBlockNode) -> SemanticResult<()> {
+        if !self.globe.traits.contains_key(&it.trait_name.lexeme) {
+            return Err(SemanticError::UnknownTrait {
+                name: it.trait_name.lexeme.clone(),
+                line: it.trait_name.position.line,
+                column: it.trait_name.position.column,
+            });
+        }
+
+        if !self.globe.structs.contains_key(&it.type_name.lexeme) {
+            return Err(SemanticError::UnknownTrait {
+                name: it.type_name.lexeme.clone(),
+                line: it.type_name.position.line,
+                column: it.type_name.position.column,
+            });
+        }
+
+        let mut methods = HashMap::new();
+        // Currently only support struct.method
+        for m in &it.methods {
+            if m.param_list.params.is_empty()
+                || !matches!(m.param_list.params[0].name.token_type, TokenType::SelfLower)
+            {
+                return Err(SemanticError::TraitMethodSignatureMismatch {
+                    trait_name: it.trait_name.lexeme.clone(),
+                    type_name: it.type_name.lexeme.clone(),
+                    method: m.name.lexeme.clone(),
+                    detail: "first parameter must be 'self'".to_string(),
+                    line: m.name.position.line,
+                    column: m.name.position.column,
+                });
+            }
+
+            let mut param_types = Vec::new();
+            for p in m.param_list.params.iter().skip(1) {
+                let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
+                param_types.push(ty);
+            }
+            let return_type = match &m.return_type {
+                Some(ty) => self.type_from_node(ty)?,
+                None => RxType::Unit,
+            };
+            methods.insert(
+                m.name.lexeme.clone(),
+                FuncSig {
+                    param_types,
+                    return_type,
+                    token: m.name.clone(),
+                    self_kind: SelfKind::Owned {
+                        ty: RxType::Struct(it.type_name.lexeme.clone()),
+                    },
+                },
+            );
+        }
+        let trait_methods = self
+            .globe
+            .traits
+            .get(&it.trait_name.lexeme)
+            .expect("checked above");
+        self.validate_trait_impl(
+            &it.trait_name.lexeme,
+            &it.type_name.lexeme,
+            trait_methods,
+            &methods,
+        )?;
+
+        let traits = self
+            .globe
+            .impl_traits
+            .get_mut(&it.type_name.lexeme)
+            .expect("checked above");
+        if traits.contains(&it.trait_name.lexeme) {
+            return Err(SemanticError::DuplicatedTraitImpl {
+                trait_name: it.trait_name.lexeme.clone(),
+                type_name: it.type_name.lexeme.clone(),
+                line: it.trait_name.position.line,
+                column: it.trait_name.position.column,
+            });
+        }
+        traits.push(it.trait_name.lexeme.clone());
         Ok(())
     }
 
@@ -872,28 +1041,65 @@ impl Analyzer {
                     });
                 };
                 let method_name = field.lexeme.clone();
-                let Some(sig) = self
+                let sig = if let Some(sig) = self
                     .globe
                     .methods
                     .get(&(struct_name.clone(), method_name.clone()))
                     .cloned()
-                else {
-                    return Err(SemanticError::UnknownCallee {
-                        name: format!("{}::{}", struct_name, method_name),
-                        line: field.position.line,
-                        column: field.position.column,
-                    });
+                {
+                    sig
+                } else {
+                    let mut found: Option<FuncSig> = None;
+                    for trait_name in self.globe.impl_traits.get(&struct_name).unwrap_or(&vec![]) {
+                        if let Some(sig) = self
+                            .globe
+                            .traits
+                            .get(trait_name)
+                            .unwrap_or(&HashMap::new())
+                            .get(&method_name)
+                            .cloned()
+                        {
+                            found = Some(sig);
+                            break;
+                        }
+                    }
+                    if let Some(sig) = found {
+                        sig
+                    } else {
+                        return Err(SemanticError::UnknownCallee {
+                            name: format!("{}::{}", struct_name, method_name),
+                            line: field.position.line,
+                            column: field.position.column,
+                        });
+                    }
                 };
-                if sig.param_types.len() != c.args.len() + 1 {
+                match &sig.self_kind {
+                    SelfKind::Owned { ty } if *ty == recv_ty => {}
+                    SelfKind::TraitSelf => {}
+                    other => {
+                        return Err(SemanticError::ArgTypeMismatched {
+                            callee: format!("{}.{}", struct_name, method_name),
+                            index: 0,
+                            expected: recv_ty,
+                            found: match other {
+                                SelfKind::Owned { ty } => ty.clone(),
+                                _ => RxType::Unit,
+                            },
+                            line: field.position.line,
+                            column: field.position.column,
+                        });
+                    }
+                };
+                if sig.param_types.len() != c.args.len() {
                     return Err(SemanticError::ArgsNumMismatched {
                         callee: format!("{}.{}", struct_name, method_name),
-                        expected: sig.param_types.len() - 1,
+                        expected: sig.param_types.len(),
                         found: c.args.len(),
                         line: field.position.line,
                         column: field.position.column,
                     });
                 }
-                for (i, (pt, arg)) in sig.param_types.iter().skip(1).zip(&c.args).enumerate() {
+                for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
                     let at = self.analyse_expression(arg)?;
                     if *pt != at {
                         return Err(SemanticError::ArgTypeMismatched {
@@ -965,5 +1171,66 @@ impl Analyzer {
                 }
             }
         })
+    }
+
+    fn validate_trait_impl(
+        &self,
+        trait_name: &str,
+        type_name: &str,
+        trait_methods: &HashMap<String, FuncSig>,
+        impl_methods: &HashMap<String, FuncSig>,
+    ) -> SemanticResult<()> {
+        for (name, trait_sig) in trait_methods {
+            if let Some(impl_sig) = impl_methods.get(name) {
+                if trait_sig.param_types != impl_sig.param_types {
+                    return Err(SemanticError::TraitMethodSignatureMismatch {
+                        trait_name: trait_name.to_string(),
+                        type_name: type_name.to_string(),
+                        method: name.clone(),
+                        detail: format!(
+                            "parameter types mismatch: expected {:?}, found {:?}",
+                            trait_sig.param_types, impl_sig.param_types
+                        ),
+                        line: impl_sig.token.position.line,
+                        column: impl_sig.token.position.column,
+                    });
+                }
+
+                if trait_sig.return_type != impl_sig.return_type {
+                    return Err(SemanticError::TraitMethodSignatureMismatch {
+                        trait_name: trait_name.to_string(),
+                        type_name: type_name.to_string(),
+                        method: name.clone(),
+                        detail: format!(
+                            "return type mismatch: expected {:?}, found {:?}",
+                            trait_sig.return_type, impl_sig.return_type
+                        ),
+                        line: impl_sig.token.position.line,
+                        column: impl_sig.token.position.column,
+                    });
+                }
+            } else {
+                return Err(SemanticError::MissingTraitImplMethod {
+                    trait_name: trait_name.to_string(),
+                    type_name: type_name.to_string(),
+                    method: name.clone(),
+                    line: trait_sig.token.position.line,
+                    column: trait_sig.token.position.column,
+                });
+            }
+        }
+
+        for (name, impl_sig) in impl_methods {
+            if !trait_methods.contains_key(name) {
+                return Err(SemanticError::ImplMethodNotInTrait {
+                    trait_name: trait_name.to_string(),
+                    type_name: type_name.to_string(),
+                    method: name.clone(),
+                    line: impl_sig.token.position.line,
+                    column: impl_sig.token.position.column,
+                });
+            }
+        }
+        Ok(())
     }
 }

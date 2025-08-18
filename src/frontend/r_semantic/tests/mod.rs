@@ -41,7 +41,7 @@ fn call_wrong_arg_type() {
         fn main() { let mut x: i32 = 0; x = add(1, true); }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("Error: {err}");
+    // println!("Error: {err}");
     assert!(err.contains("expected 'i32' but got 'bool'"), "err: {err}");
 }
 
@@ -49,7 +49,7 @@ fn call_wrong_arg_type() {
 fn if_branch_type_mismatch() {
     let src = r#"fn f(a: bool) -> i32 { if a { 1 } else { true } }"#;
     let err = analyze_src(src).unwrap_err();
-    println!("Error: {err}");
+    // println!("Error: {err}");
     assert!(err.contains("Mismatched branch types"), "err: {err}");
 }
 
@@ -57,7 +57,7 @@ fn if_branch_type_mismatch() {
 fn function_return_type_mismatch() {
     let src = r#"fn f() -> i32 { true }"#;
     let err = analyze_src(src).unwrap_err();
-    println!("Error: {err}");
+    // println!("Error: {err}");
     assert!(err.contains("expected i32, found bool"), "err: {err}");
 }
 
@@ -141,7 +141,7 @@ fn struct_method_wrong_args() {
         fn main() { let p: Point = Point { x: 1, y: 2 }; let s = p.add_x(true); }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("{:?}", err);
+    // println!("{:?}", err);
     assert!(err.contains("expected 'i32'"), "err: {err}");
 }
 
@@ -163,7 +163,7 @@ fn static_method_wrong_args() {
         fn main() { let p: Point = Point::make(true, 2); }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("{:?}", err);
+    // println!("{:?}", err);
     assert!(err.contains("expected 'i32'"), "err: {err}");
 }
 
@@ -191,7 +191,7 @@ fn array_element_assignment_type_error() {
         fn main() { let mut a: [i32; 3] = [1, 2, 3]; a[1] = true; }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("{:?}", err);
+    // println!("{:?}", err);
     assert!(err.contains("Type mismatch in assignment"), "err: {err}");
 }
 
@@ -201,7 +201,7 @@ fn array_element_assignment_immutable_error() {
         fn main() { let a: [i32; 2] = [1, 2]; a[0] = 3; }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("{:?}", err);
+    // println!("{:?}", err);
     assert!(err.contains("immutable"), "err: {err}");
 }
 
@@ -231,6 +231,46 @@ fn struct_field_assignment_immutable_error() {
         fn main() { let p: Point = Point { x: 1, y: 2 }; p.x = 3; }
     "#;
     let err = analyze_src(src).unwrap_err();
-    println!("{:?}", err);
+    // println!("{:?}", err);
     assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn trait_decl_and_impl_ok_and_dispatch() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        trait Sum {
+            fn sum(self: Point) -> i32;
+        }
+        impl Sum for Point {
+            fn sum(self: Point) -> i32 { self.x + self.y }
+        }
+        fn main() {
+            let p: Point = Point { x: 1, y: 2 };
+            let s: i32 = p.sum();
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_impl_missing_method_error() {
+    let src = r#"
+        struct S { a: i32 }
+        trait T { fn sum(self: S) -> i32; }
+        impl T for S { }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("missing method"), "err: {err}");
+}
+
+#[test]
+fn trait_impl_signature_mismatch_error() {
+    let src = r#"
+        struct S { a: i32 }
+        trait T { fn sum(self: S, b: i32) -> i32; }
+        impl T for S { fn sum(self: S, b: bool) -> i32 { 0 } }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("Signature mismatch"), "err: {err}");
 }
