@@ -142,6 +142,20 @@ impl Parser {
     fn parse_type(&mut self) -> ParseResult<TypeNode> {
         let token = self.current_token().clone();
         match token.token_type {
+            TokenType::And => {
+                self.advance();
+                let mutable = if self.check_type(&TokenType::Mut) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                let inner_type = self.parse_type()?;
+                Ok(TypeNode::Ref {
+                    inner_type: Box::new(inner_type),
+                    mutable,
+                })
+            }
             TokenType::I32 => {
                 self.advance();
                 Ok(TypeNode::I32(token))
@@ -270,7 +284,7 @@ impl Parser {
     fn is_stat_start(&self) -> bool {
         // Currently, only 'let' and simple assignments are forced statements
         match self.current_token().token_type {
-            TokenType::Let => true,
+            TokenType::Let | TokenType::If | TokenType::While => true,
             TokenType::Identifier => self
                 .peek_safe()
                 .map(|t| matches!(t.token_type, TokenType::Eq))
@@ -328,6 +342,14 @@ impl Parser {
                     Ok(StatementNode::Expression(ExprStatementNode { expression }))
                 }
             }
+            TokenType::If => {
+                let expression = self.parse_if_expression()?;
+                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+            }
+            TokenType::While => {
+                let expression = self.parse_while_expression()?;
+                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+            }
             _ => {
                 let expression = self.parse_expression()?;
                 self.expect_type(&TokenType::Semicolon)?;
@@ -350,6 +372,21 @@ impl Parser {
                 let rhs = self.parse_expr_bp(r_bp)?;
                 ExpressionNode::Unary(UnaryExprNode {
                     operator: op,
+                    operand: Box::new(rhs),
+                })
+            }
+            TokenType::And => {
+                self.advance();
+                let mutable = if self.check_type(&TokenType::Mut) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                let r_bp = 135;
+                let rhs = self.parse_expr_bp(r_bp)?;
+                ExpressionNode::Ref(RefExprNode {
+                    mutable,
                     operand: Box::new(rhs),
                 })
             }

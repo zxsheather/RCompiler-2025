@@ -277,4 +277,13 @@ pub enum SemanticError {
         line: usize,
         column: usize,
     },
+
+    #[error(
+        "Cannot take mutable reference to immutable value '{name}' at line {line}, column {column}"
+    )]
+    BorrowMutFromImmutable {
+        name: String,
+        line: usize,
+        column: usize,
+    },
 }

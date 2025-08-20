@@ -27,6 +27,10 @@ pub enum TypeNode {
         elem_type: Box<TypeNode>,
         size: Option<Token>,
     },
+    Ref {
+        inner_type: Box<TypeNode>,
+        mutable: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -168,6 +172,7 @@ pub enum ExpressionNode {
     If(Box<IfExprNode>),
     While(Box<WhileExprNode>),
     Member(MemberExprNode),
+    Ref(RefExprNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -226,4 +231,10 @@ pub struct MemberExprNode {
 pub struct StaticMemberExprNode {
     pub type_name: Token,
     pub member: Token,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RefExprNode {
+    pub mutable: bool,
+    pub operand: Box<ExpressionNode>,
 }

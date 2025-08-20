@@ -274,3 +274,127 @@ fn trait_impl_signature_mismatch_error() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("Signature mismatch"), "err: {err}");
 }
+
+#[test]
+fn references_basic_and_types() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn takes_ref_i32(a: &i32) { }
+        fn takes_ref_mut_point(p: &mut Point) { }
+        fn main() {
+            let x: i32 = 1;
+            let mut p: Point = Point { x: 1, y: 2 };
+            let r1 = &x; // &i32
+            let r2 = &mut p; // &mut Point
+            takes_ref_i32(r1);
+            takes_ref_mut_point(r2);
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn references_auto_deref_member_and_index() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn main() {
+            let p: Point = Point { x: 1, y: 2 };
+            let rp = &p;
+            let a: [i32; 3] = [1, 2, 3];
+            let ra = &a;
+            let v1: i32 = rp.x; // auto-deref for member
+            let v2: i32 = ra[0]; // auto-deref for index
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_call_on_borrowed_receiver() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        impl Point {
+            fn sum(self: &Point) -> i32 { self.x + self.y }
+            fn bump_x(self: &mut Point, v: i32) -> i32 { self.x + v }
+        }
+        fn main() {
+            let p: Point = Point { x: 1, y: 2 };
+            let rp = &p;
+            let s: i32 = rp.sum();
+            let mut q: Point = Point { x: 3, y: 4 };
+            let rqm = &mut q;
+            let t: i32 = rqm.bump_x(5);
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn borrow_mut_from_immutable_error() {
+    let src = r#"
+        fn main() {
+            let x: i32 = 1;
+            let rx = &mut x;
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(
+        err.contains("Cannot take mutable reference to immutable value"),
+        "err: {err}"
+    );
+}
+
+#[test]
+fn assign_through_mut_array_ref_ok() {
+    let src = r#"
+        fn main() {
+            let mut a: [i32; 3] = [1,2,3];
+            let ra: &mut [i32; 3] = &mut a;
+            ra[1] = 42;
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn assign_through_immutable_array_ref_error() {
+    let src = r#"
+        fn main() {
+            let a: [i32; 3] = [1,2,3];
+            let ra: &[i32; 3] = &a;
+            ra[1] = 42;
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn assign_through_mut_struct_ref_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        fn main() {
+            let mut p: P = P { x: 1 };
+            let rp: &mut P = &mut p;
+            rp.x = 2;
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_requires_mut_receiver_error() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P {
+            fn set_x(self: &mut P, v: i32) -> i32 { self.x + v }
+        }
+        fn main() {
+            let p: P = P { x: 1 };
+            let rp = &p;
+            rp.set_x(2);
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut P'"), "err: {err}");
+}

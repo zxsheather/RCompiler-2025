@@ -12,6 +12,7 @@ pub enum RxType {
     Tuple(Vec<RxType>),
     Array(Box<RxType>, Option<usize>),
     Struct(String),
+    Ref(Box<RxType>, bool),
 }
 
 impl fmt::Display for RxType {
@@ -36,6 +37,13 @@ impl fmt::Display for RxType {
                 }
             }
             RxType::Struct(s) => write!(f, "{s}"),
+            RxType::Ref(inner_type, mutable) => {
+                if *mutable {
+                    write!(f, "&mut {}", inner_type)
+                } else {
+                    write!(f, "&{}", inner_type)
+                }
+            }
         }
     }
 }

@@ -413,3 +413,78 @@ fn struct_literal_shorthand_parse() {
     );
     assert!(nodes.len() >= 2);
 }
+
+#[test]
+fn ref_expr_parse() {
+    // &x
+    let expr = parse_expr("&x");
+    match expr {
+        ExpressionNode::Ref(r) => {
+            assert_eq!(r.mutable, false);
+            assert!(matches!(*r.operand, ExpressionNode::Identifier(_)));
+        }
+        _ => panic!("expected ref expr"),
+    }
+
+    // &mut x
+    let expr2 = parse_expr("&mut x");
+    match expr2 {
+        ExpressionNode::Ref(r) => {
+            assert_eq!(r.mutable, true);
+            assert!(matches!(*r.operand, ExpressionNode::Identifier(_)));
+        }
+        _ => panic!("expected ref expr &mut"),
+    }
+
+    // (&a)[0] parses as index whose array is a ref expr
+    let expr3 = parse_expr("(&a)[0]");
+    match expr3 {
+        ExpressionNode::Index(IndexExprNode { array, index }) => {
+            assert!(matches!(*index, ExpressionNode::IntegerLiteral(_)));
+            match *array {
+                ExpressionNode::Ref(_) => {}
+                _ => panic!("array side should be a ref expr"),
+            }
+        }
+        _ => panic!("expected index expr over ref"),
+    }
+}
+
+#[test]
+fn ref_type_parse_in_fn_params() {
+    let src = r#"
+        struct Point { x: i32, y: i32 }
+        fn f(a: &i32, b: &mut Point) { }
+    "#;
+    let nodes = parse_nodes(src);
+    // function should be second node
+    match &nodes[1] {
+        AstNode::Function(func) => {
+            assert_eq!(func.param_list.params.len(), 2);
+            match func.param_list.params[0].type_annotation.as_ref().unwrap() {
+                TypeNode::Ref {
+                    inner_type,
+                    mutable,
+                } => {
+                    assert_eq!(*mutable, false);
+                    assert!(matches!(**inner_type, TypeNode::I32(_)));
+                }
+                _ => panic!("expected &i32"),
+            }
+            match func.param_list.params[1].type_annotation.as_ref().unwrap() {
+                TypeNode::Ref {
+                    inner_type,
+                    mutable,
+                } => {
+                    assert_eq!(*mutable, true);
+                    match **inner_type {
+                        TypeNode::Named(ref t) => assert_eq!(t.lexeme, "Point"),
+                        _ => panic!("inner should be named Point"),
+                    }
+                }
+                _ => panic!("expected &mut Point"),
+            }
+        }
+        _ => panic!("expected function"),
+    }
+}

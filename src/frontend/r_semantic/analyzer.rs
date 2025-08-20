@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Index, usize};
+use std::{collections::HashMap, usize};
 
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
@@ -6,7 +6,7 @@ use crate::frontend::{
         AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
         IndexExprNode, LetStatementNode, MemberExprNode, StatementNode, StructLiteralNode,
-        TraitDeclNode, TupleLiteralNode, TypeNode, UnaryExprNode, WhileExprNode,
+        TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -49,6 +49,8 @@ pub struct FuncSig {
 pub enum SelfKind {
     None,
     Owned { ty: RxType },
+    Borrowed { ty: RxType },
+    BorrowedMut { ty: RxType },
     TraitSelf, // abstract self for trait
 }
 
@@ -272,7 +274,6 @@ impl Analyzer {
         for m in &impl_node.methods {
             let mut param_types = Vec::new();
             for p in m.param_list.params.iter() {
-                // The type of self is the struct itself
                 let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
                 param_types.push(ty);
             }
@@ -288,6 +289,46 @@ impl Analyzer {
                 .map(|p| matches!(p.name.token_type, TokenType::SelfLower))
                 .unwrap_or(false);
             if is_instance {
+                let self_ty = param_types.get(0).cloned().unwrap();
+                // Determine self_kind and validate matches impl type
+                let self_kind = match &self_ty {
+                    RxType::Struct(s) if *s == st_name => SelfKind::Owned {
+                        ty: RxType::Struct(st_name.clone()),
+                    },
+                    RxType::Ref(inner, is_mut) => match &**inner {
+                        RxType::Struct(s) if *s == st_name => {
+                            if *is_mut {
+                                SelfKind::BorrowedMut {
+                                    ty: RxType::Struct(st_name.clone()),
+                                }
+                            } else {
+                                SelfKind::Borrowed {
+                                    ty: RxType::Struct(st_name.clone()),
+                                }
+                            }
+                        }
+                        other => {
+                            return Err(SemanticError::Generic {
+                                msg: format!(
+                                    "self type in impl must be {} or &/&mut {}, found {}",
+                                    st_name, st_name, other
+                                ),
+                                line: m.name.position.line,
+                                column: m.name.position.column,
+                            });
+                        }
+                    },
+                    other => {
+                        return Err(SemanticError::Generic {
+                            msg: format!(
+                                "self type in impl must be {} or &/&mut {}, found {}",
+                                st_name, st_name, other
+                            ),
+                            line: m.name.position.line,
+                            column: m.name.position.column,
+                        });
+                    }
+                };
                 let mut rest_params = param_types.clone();
                 rest_params.remove(0);
                 self.globe.methods.insert(
@@ -296,9 +337,7 @@ impl Analyzer {
                         param_types: rest_params,
                         return_type,
                         token: m.name.clone(),
-                        self_kind: SelfKind::Owned {
-                            ty: RxType::Struct(st_name.clone()),
-                        },
+                        self_kind,
                     },
                 );
             } else {
@@ -584,6 +623,93 @@ impl Analyzer {
                 }
                 Ok(RxType::Unit)
             }
+            ExpressionNode::Ref(r) => {
+                let ty = self.analyse_expression(&r.operand)?;
+                if r.mutable {
+                    match &*r.operand {
+                        ExpressionNode::Identifier(tok) => {
+                            let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                                return Err(SemanticError::UndefinedIdentifier {
+                                    name: tok.lexeme.clone(),
+                                    line: tok.position.line,
+                                    column: tok.position.column,
+                                });
+                            };
+                            if !symbol.mutable {
+                                return Err(SemanticError::BorrowMutFromImmutable {
+                                    name: tok.lexeme.clone(),
+                                    line: tok.position.line,
+                                    column: tok.position.column,
+                                });
+                            }
+                        }
+                        ExpressionNode::Index(IndexExprNode { array, .. }) => {
+                            if let ExpressionNode::Identifier(tok) = &**array {
+                                let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                                    return Err(SemanticError::UndefinedIdentifier {
+                                        name: tok.lexeme.clone(),
+                                        line: tok.position.line,
+                                        column: tok.position.column,
+                                    });
+                                };
+                                let can_write = match &symbol.ty {
+                                    RxType::Ref(_, is_mut) => *is_mut,
+                                    _ => symbol.mutable,
+                                };
+                                if !can_write {
+                                    return Err(SemanticError::BorrowMutFromImmutable {
+                                        name: tok.lexeme.clone(),
+                                        line: tok.position.line,
+                                        column: tok.position.column,
+                                    });
+                                }
+                            } else {
+                                return Err(SemanticError::Generic {
+                                    msg: "Cannot take mutable reference of non-lvalue".to_string(),
+                                    line: 0,
+                                    column: 0,
+                                });
+                            }
+                        }
+                        ExpressionNode::Member(MemberExprNode { object, .. }) => {
+                            if let ExpressionNode::Identifier(tok) = &**object {
+                                let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                                    return Err(SemanticError::UndefinedIdentifier {
+                                        name: tok.lexeme.clone(),
+                                        line: tok.position.line,
+                                        column: tok.position.column,
+                                    });
+                                };
+                                let can_write = match &symbol.ty {
+                                    RxType::Ref(_, is_mut) => *is_mut,
+                                    _ => symbol.mutable,
+                                };
+                                if !can_write {
+                                    return Err(SemanticError::BorrowMutFromImmutable {
+                                        name: tok.lexeme.clone(),
+                                        line: tok.position.line,
+                                        column: tok.position.column,
+                                    });
+                                }
+                            } else {
+                                return Err(SemanticError::Generic {
+                                    msg: "Cannot take mutable reference of non-lvalue".to_string(),
+                                    line: 0,
+                                    column: 0,
+                                });
+                            }
+                        }
+                        _ => {
+                            return Err(SemanticError::Generic {
+                                msg: "Cannot take mutable reference of rvalue".to_string(),
+                                line: 0,
+                                column: 0,
+                            });
+                        }
+                    }
+                }
+                Ok(RxType::Ref(Box::new(ty), r.mutable))
+            }
         }
     }
 
@@ -725,7 +851,11 @@ impl Analyzer {
                                 column,
                             });
                         };
-                        if !symbol.mutable {
+                        let can_write = match &symbol.ty {
+                            RxType::Ref(_, is_mut) => *is_mut,
+                            _ => symbol.mutable,
+                        };
+                        if !can_write {
                             return Err(SemanticError::AssignImmutableVar {
                                 name: tok.lexeme.clone(),
                                 line,
@@ -756,24 +886,39 @@ impl Analyzer {
                             });
                         };
 
-                        if !symbol.mutable {
+                        let (struct_name, can_write) = match &symbol.ty {
+                            RxType::Struct(s) => (s.clone(), symbol.mutable),
+                            RxType::Ref(inner, is_mut) => match &**inner {
+                                RxType::Struct(s) => (s.clone(), *is_mut),
+                                other => {
+                                    return Err(SemanticError::Generic {
+                                        msg: format!(
+                                            "Member assignment requires struct, found {}",
+                                            other
+                                        ),
+                                        line,
+                                        column,
+                                    });
+                                }
+                            },
+                            other => {
+                                return Err(SemanticError::Generic {
+                                    msg: format!(
+                                        "Member assignment requires struct, found {}",
+                                        other
+                                    ),
+                                    line,
+                                    column,
+                                });
+                            }
+                        };
+                        if !can_write {
                             return Err(SemanticError::AssignImmutableVar {
                                 name: tok.lexeme.clone(),
                                 line,
                                 column,
                             });
                         }
-
-                        let RxType::Struct(struct_name) = symbol.ty.clone() else {
-                            return Err(SemanticError::Generic {
-                                msg: format!(
-                                    "Member assignment requires struct, found {}",
-                                    symbol.ty
-                                ),
-                                line,
-                                column,
-                            });
-                        };
 
                         let Some(field_map) = self.globe.structs.get(&struct_name) else {
                             return Err(SemanticError::UnknownStruct {
@@ -817,7 +962,10 @@ impl Analyzer {
     }
 
     fn analyse_index(&mut self, i: &IndexExprNode) -> SemanticResult<RxType> {
-        let arr_ty = self.analyse_expression(&i.array)?;
+        let mut arr_ty = self.analyse_expression(&i.array)?;
+        if let RxType::Ref(inner, _) = arr_ty.clone() {
+            arr_ty = *inner;
+        }
         let idx_ty = self.analyse_expression(&i.index)?;
         if !idx_ty.is_integer() {
             // Currently not handle position information
@@ -839,7 +987,10 @@ impl Analyzer {
     }
 
     fn analyse_member(&mut self, m: &MemberExprNode) -> SemanticResult<RxType> {
-        let obj_ty = self.analyse_expression(&m.object)?;
+        let mut obj_ty = self.analyse_expression(&m.object)?;
+        if let RxType::Ref(inner, _) = obj_ty.clone() {
+            obj_ty = *inner;
+        }
         let line = m.field.position.line;
         let column = m.field.position.column;
         let RxType::Struct(name) = obj_ty else {
@@ -1032,13 +1183,30 @@ impl Analyzer {
                 Ok(sig.return_type)
             }
             ExpressionNode::Member(MemberExprNode { object, field }) => {
-                let recv_ty = self.analyse_expression(&object)?;
-                let RxType::Struct(struct_name) = recv_ty.clone() else {
-                    return Err(SemanticError::Generic {
-                        msg: format!("Method call receiver must be struct, found {}", recv_ty),
-                        line: field.position.line,
-                        column: field.position.column,
-                    });
+                let recv_expr_ty = self.analyse_expression(&object)?;
+                // Extract struct name from receiver type (auto-deref for lookup), but keep original for mutability check
+                let struct_name = match recv_expr_ty.clone() {
+                    RxType::Struct(s) => s,
+                    RxType::Ref(inner, _) => match *inner {
+                        RxType::Struct(s) => s,
+                        other => {
+                            return Err(SemanticError::Generic {
+                                msg: format!(
+                                    "Method call receiver must be struct, found {}",
+                                    other
+                                ),
+                                line: field.position.line,
+                                column: field.position.column,
+                            });
+                        }
+                    },
+                    other => {
+                        return Err(SemanticError::Generic {
+                            msg: format!("Method call receiver must be struct, found {}", other),
+                            line: field.position.line,
+                            column: field.position.column,
+                        });
+                    }
                 };
                 let method_name = field.lexeme.clone();
                 let sig = if let Some(sig) = self
@@ -1073,23 +1241,35 @@ impl Analyzer {
                         });
                     }
                 };
-                match &sig.self_kind {
-                    SelfKind::Owned { ty } if *ty == recv_ty => {}
-                    SelfKind::TraitSelf => {}
-                    other => {
-                        return Err(SemanticError::ArgTypeMismatched {
-                            callee: format!("{}.{}", struct_name, method_name),
-                            index: 0,
-                            expected: recv_ty,
-                            found: match other {
-                                SelfKind::Owned { ty } => ty.clone(),
-                                _ => RxType::Unit,
-                            },
-                            line: field.position.line,
-                            column: field.position.column,
-                        });
+                let expected_owned = RxType::Struct(struct_name.clone());
+                let expected_borrow = RxType::Ref(Box::new(expected_owned.clone()), false);
+                let expected_borrow_mut = RxType::Ref(Box::new(expected_owned.clone()), true);
+                let ok_recv = match &sig.self_kind {
+                    SelfKind::Owned { ty } => recv_expr_ty == *ty,
+                    SelfKind::Borrowed { ty } => {
+                        recv_expr_ty == RxType::Ref(Box::new(ty.clone()), false)
                     }
+                    SelfKind::BorrowedMut { ty } => {
+                        recv_expr_ty == RxType::Ref(Box::new(ty.clone()), true)
+                    }
+                    SelfKind::TraitSelf => true,
+                    SelfKind::None => false,
                 };
+                if !ok_recv {
+                    return Err(SemanticError::ArgTypeMismatched {
+                        callee: format!("{}.{}", struct_name, method_name),
+                        index: 0,
+                        expected: match sig.self_kind {
+                            SelfKind::Owned { .. } => expected_owned,
+                            SelfKind::Borrowed { .. } => expected_borrow,
+                            SelfKind::BorrowedMut { .. } => expected_borrow_mut,
+                            SelfKind::TraitSelf | SelfKind::None => expected_owned,
+                        },
+                        found: recv_expr_ty,
+                        line: field.position.line,
+                        column: field.position.column,
+                    });
+                }
                 if sig.param_types.len() != c.args.len() {
                     return Err(SemanticError::ArgsNumMismatched {
                         callee: format!("{}.{}", struct_name, method_name),
@@ -1158,6 +1338,13 @@ impl Analyzer {
                 };
                 RxType::Array(Box::new(elem_ty), len)
             }
+            TypeNode::Ref {
+                inner_type,
+                mutable,
+            } => {
+                let t = self.type_from_node(&inner_type)?;
+                RxType::Ref(Box::new(t), *mutable)
+            }
             TypeNode::Named(token) => {
                 let name = token.lexeme.clone();
                 if self.globe.structs.contains_key(&name) {
@@ -1208,6 +1395,32 @@ impl Analyzer {
                         line: impl_sig.token.position.line,
                         column: impl_sig.token.position.column,
                     });
+                }
+                // Ensure trait uses TraitSelf and impl provides a concrete self kind (owned or borrowed)
+                if trait_sig.self_kind != SelfKind::TraitSelf {
+                    return Err(SemanticError::TraitMethodSignatureMismatch {
+                        trait_name: trait_name.to_string(),
+                        type_name: type_name.to_string(),
+                        method: name.clone(),
+                        detail: "trait method must have self".to_string(),
+                        line: impl_sig.token.position.line,
+                        column: impl_sig.token.position.column,
+                    });
+                }
+                match impl_sig.self_kind {
+                    SelfKind::Owned { .. }
+                    | SelfKind::Borrowed { .. }
+                    | SelfKind::BorrowedMut { .. } => {}
+                    _ => {
+                        return Err(SemanticError::TraitMethodSignatureMismatch {
+                            trait_name: trait_name.to_string(),
+                            type_name: type_name.to_string(),
+                            method: name.clone(),
+                            detail: "impl method must have self".to_string(),
+                            line: impl_sig.token.position.line,
+                            column: impl_sig.token.position.column,
+                        });
+                    }
                 }
             } else {
                 return Err(SemanticError::MissingTraitImplMethod {
