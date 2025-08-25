@@ -689,7 +689,7 @@ fn array_repeat_size_parse_error() {
 fn array_repeat_type_mismatch_inside_assignment() {
     let src = r#"
         fn main() { let a: [i32; 3] = [1; 2]; }
-    "#; 
+    "#;
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("Type mismatch in assignment"), "err: {err}");
 }
