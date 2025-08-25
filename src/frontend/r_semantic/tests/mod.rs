@@ -667,3 +667,29 @@ fn trait_self_kind_mismatch_error() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("self kind mismatch"), "err: {err}");
 }
+
+#[test]
+fn array_repeat_syntax_ok() {
+    let src = r#"
+        fn main() { let mut flags: [bool; 5] = [false; 5]; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn array_repeat_size_parse_error() {
+    let src = r#"
+        fn main() { let flags = [0; true]; }
+    "#; // size not integer literal -> parse error
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("Expected IntegerLiteral"), "err: {err}");
+}
+
+#[test]
+fn array_repeat_type_mismatch_inside_assignment() {
+    let src = r#"
+        fn main() { let a: [i32; 3] = [1; 2]; }
+    "#; 
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("Type mismatch in assignment"), "err: {err}");
+}

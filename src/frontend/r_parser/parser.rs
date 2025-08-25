@@ -791,15 +791,39 @@ impl Parser {
             self.advance();
             return Ok(ArrayLiteralNode { elements });
         }
-        loop {
-            let expr = self.parse_expression()?;
-            elements.push(expr);
-            if self.check_type(&TokenType::Comma) {
+        // Lookahead for repeat form: <expr> ; <IntegerLiteral> ]
+        let first_expr = self.parse_expression()?;
+        if self.check_type(&TokenType::Semicolon) {
+            self.advance();
+            let size_tok = self.expect_type(&TokenType::IntegerLiteral)?;
+            self.expect_type(&TokenType::RBracket)?;
+            if let Ok(n) = size_tok.lexeme.parse::<usize>() {
+                elements = Vec::with_capacity(n);
+                for _ in 0..n {
+                    elements.push(first_expr.clone());
+                }
+                return Ok(ArrayLiteralNode { elements });
+            } else {
+                return Err(ParseError::Generic {
+                    message: format!(
+                        "Invalid array repeat size '{}': not a usize",
+                        size_tok.lexeme
+                    ),
+                    line: size_tok.position.line,
+                    column: size_tok.position.column,
+                });
+            }
+        } else {
+            elements.push(first_expr);
+            while self.check_type(&TokenType::Comma) {
                 self.advance();
-                continue;
+                if self.check_type(&TokenType::RBracket) {
+                    break;
+                }
+                let expr = self.parse_expression()?;
+                elements.push(expr);
             }
             self.expect_type(&TokenType::RBracket)?;
-            break;
         }
         Ok(ArrayLiteralNode { elements })
     }
