@@ -398,3 +398,272 @@ fn method_requires_mut_receiver_error() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("expected '&mut P'"), "err: {err}");
 }
+
+#[test]
+fn method_self_ref_sugar_borrow_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn get(&self) -> i32 { self.x } }
+        fn main() { let p: P = P { x: 1 }; let v: i32 = p.get(); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_self_ref_sugar_mut_borrow_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(&mut self, v: i32) -> i32 { self.x + v } }
+        fn main() { let mut p: P = P { x: 1 }; let v: i32 = p.set(2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_self_ref_sugar_mut_on_immutable_error() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(&mut self, v: i32) -> i32 { self.x + v } }
+        fn main() { let p: P = P { x: 1 }; p.set(2); }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut P'"), "err: {err}");
+}
+
+#[test]
+fn mutable_param_assignment_ok() {
+    let src = r#"
+        fn f(mut a: i32, b: i32) { a = a + 1; }
+        fn main() { f(1, 2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn immutable_param_assignment_error() {
+    let src = r#"
+        fn f(a: i32) { a = 2; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn method_auto_borrow_for_ref_receiver_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn get(self: &P) -> i32 { self.x } }
+        fn main() {
+            let p: P = P { x: 1 };
+            // owned value calling &self method: auto &
+            let v: i32 = p.get();
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_auto_borrow_mut_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(self: &mut P, v: i32) -> i32 { self.x + v } }
+        fn main() {
+            let mut p: P = P { x: 1 };
+            // auto &mut because method expects &mut P and we have mutable owned p
+            let r: i32 = p.set(2);
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_auto_borrow_mut_on_immutable_error() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(self: &mut P, v: i32) -> i32 { self.x + v } }
+        fn main() {
+            let p: P = P { x: 1 }; // immutable
+            p.set(2); // should fail: cannot auto &mut
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut P'"), "err: {err}");
+}
+
+#[test]
+fn method_auto_deref_ref_to_owned_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn take(self: P) -> i32 { self.x } }
+        fn main() {
+            let p: P = P { x: 1 };
+            let rp = &p;
+            // calling owned self method on &P (auto-deref)
+            let v: i32 = rp.take();
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_auto_deref_mut_ref_to_owned_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn take(self: P) -> i32 { self.x } }
+        fn main() {
+            let mut p: P = P { x: 1 };
+            let rp = &mut p;
+            let v: i32 = rp.take();
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+// === Additional robustness tests for self semantics (struct & trait) ===
+
+#[test]
+fn trait_impl_owned_self_call_ok() {
+    let src = r#"
+        struct S { v: i32 }
+        trait Inc { fn inc(self: S, d: i32) -> i32; }
+        impl Inc for S { fn inc(self: S, d: i32) -> i32 { self.v + d } }
+        fn main() { let s: S = S { v: 1 }; let x: i32 = s.inc(2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_impl_borrowed_self_call_auto_ref_ok() {
+    let src = r#"
+        struct S { v: i32 }
+    trait Inc { fn inc(&self, d: i32) -> i32; }
+        impl Inc for S { fn inc(self: &S, d: i32) -> i32 { self.v + d } }
+        fn main() { let s: S = S { v: 1 }; // owned -> &S auto
+            let x: i32 = s.inc(2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_impl_borrowed_mut_self_call_auto_ref_mut_ok() {
+    let src = r#"
+        struct S { v: i32 }
+    trait Inc { fn inc(&mut self, d: i32) -> i32; }
+        impl Inc for S { fn inc(self: &mut S, d: i32) -> i32 { self.v = self.v + d; self.v } }
+        fn main() { let mut s: S = S { v: 1 }; let x: i32 = s.inc(2); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_impl_borrowed_mut_self_call_auto_ref_mut_on_immutable_error() {
+    let src = r#"
+        struct S { v: i32 }
+    trait Inc { fn inc(&mut self, d: i32) -> i32; }
+        impl Inc for S { fn inc(self: &mut S, d: i32) -> i32 { self.v + d } }
+        fn main() { let s: S = S { v: 1 }; s.inc(2); }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut S'"), "err: {err}");
+}
+
+#[test]
+fn method_receiver_array_index_auto_borrow_mut_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(self: &mut P, v: i32) -> i32 { self.x = v; self.x } }
+        fn main() {
+            let mut arr: [P; 1] = [P { x: 1 }];
+            let r: i32 = arr[0].set(5);
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_receiver_array_index_auto_borrow_mut_immutable_error() {
+    let src = r#"
+        struct P { x: i32 }
+        impl P { fn set(self: &mut P, v: i32) -> i32 { self.x = v; self.x } }
+        fn main() {
+            let arr: [P; 1] = [P { x: 1 }];
+            arr[0].set(5); // immutable root
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut P'"), "err: {err}");
+}
+
+#[test]
+fn method_receiver_member_chain_auto_borrow_mut_ok() {
+    let src = r#"
+        struct Inner { x: i32 }
+        struct Wrap { i: Inner }
+        impl Inner { fn set(self: &mut Inner, v: i32) -> i32 { self.x = v; self.x } }
+        fn main() {
+            let mut w: Wrap = Wrap { i: Inner { x: 1 } };
+            let r: i32 = w.i.set(10);
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn method_receiver_member_chain_auto_borrow_mut_immutable_error() {
+    let src = r#"
+        struct Inner { x: i32 }
+        struct Wrap { i: Inner }
+        impl Inner { fn set(self: &mut Inner, v: i32) -> i32 { self.x = v; self.x } }
+        fn main() {
+            let w: Wrap = Wrap { i: Inner { x: 1 } }; // immutable
+            w.i.set(10);
+        }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut Inner'"), "err: {err}");
+}
+
+#[test]
+fn trait_with_ref_self_ok() {
+    let src = r#"
+        struct S { v: i32 }
+        trait Show { fn show(&self) -> i32; }
+        impl Show for S { fn show(&self) -> i32 { self.v } }
+        fn main() { let s: S = S { v: 3 }; let x: i32 = s.show(); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_with_mut_ref_self_ok() {
+    let src = r#"
+        struct S { v: i32 }
+        trait Incr { fn add(&mut self, d: i32) -> i32; }
+        impl Incr for S { fn add(&mut self, d: i32) -> i32 { self.v = self.v + d; self.v } }
+        fn main() { let mut s: S = S { v: 1 }; let r: i32 = s.add(4); }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn trait_with_mut_ref_self_on_immutable_var_error() {
+    let src = r#"
+        struct S { v: i32 }
+        trait Incr { fn add(&mut self, d: i32) -> i32; }
+        impl Incr for S { fn add(&mut self, d: i32) -> i32 { self.v + d } }
+        fn main() { let s: S = S { v: 1 }; s.add(2); }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected '&mut S'"), "err: {err}");
+}
+
+#[test]
+fn trait_self_kind_mismatch_error() {
+    let src = r#"
+        struct S { v: i32 }
+        trait T { fn f(&self) -> i32; }
+        impl T for S { fn f(self: S) -> i32 { self.v } }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("self kind mismatch"), "err: {err}");
+}

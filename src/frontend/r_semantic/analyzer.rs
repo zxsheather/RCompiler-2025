@@ -5,8 +5,8 @@ use crate::frontend::{
     r_parser::ast::{
         AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
-        IndexExprNode, LetStatementNode, MemberExprNode, StatementNode, StructLiteralNode,
-        TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
+        IndexExprNode, LetStatementNode, MemberExprNode, MethodCallExprNode, StatementNode,
+        StructLiteralNode, TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -51,7 +51,9 @@ pub enum SelfKind {
     Owned { ty: RxType },
     Borrowed { ty: RxType },
     BorrowedMut { ty: RxType },
-    TraitSelf, // abstract self for trait
+    TraitOwned,
+    TraitBorrowed,
+    TraitBorrowedMut,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -248,13 +250,31 @@ impl Analyzer {
                 Some(t) => self.type_from_node(t)?,
                 None => RxType::Unit,
             };
+            let trait_self_kind = if let Some(first_param) = m.param_list.params.first() {
+                match &first_param.type_annotation {
+                    Some(TypeNode::SelfRef { mutable }) => {
+                        if *mutable {
+                            SelfKind::TraitBorrowedMut
+                        } else {
+                            SelfKind::TraitBorrowed
+                        }
+                    }
+                    Some(TypeNode::Named(tok)) if tok.lexeme == td.name.lexeme => {
+                        SelfKind::TraitOwned
+                    }
+                    None => SelfKind::TraitOwned,
+                    _ => SelfKind::TraitOwned,
+                }
+            } else {
+                SelfKind::TraitOwned
+            };
             methods.insert(
                 m.name.lexeme.clone(),
                 FuncSig {
                     param_types,
                     return_type,
                     token: m.name.clone(),
-                    self_kind: SelfKind::TraitSelf,
+                    self_kind: trait_self_kind,
                 },
             );
         }
@@ -388,6 +408,57 @@ impl Analyzer {
                 });
             }
 
+            let self_kind = if let Some(self_param) = m.param_list.params.first() {
+                if let Some(ann) = &self_param.type_annotation {
+                    let self_ty = self.type_from_node(ann)?;
+                    match &self_ty {
+                        RxType::Struct(s) if *s == it.type_name.lexeme => SelfKind::Owned {
+                            ty: RxType::Struct(it.type_name.lexeme.clone()),
+                        },
+                        RxType::Ref(inner, is_mut) => match &**inner {
+                            RxType::Struct(s) if *s == it.type_name.lexeme => {
+                                if *is_mut {
+                                    SelfKind::BorrowedMut {
+                                        ty: RxType::Struct(it.type_name.lexeme.clone()),
+                                    }
+                                } else {
+                                    SelfKind::Borrowed {
+                                        ty: RxType::Struct(it.type_name.lexeme.clone()),
+                                    }
+                                }
+                            }
+                            other => {
+                                return Err(SemanticError::Generic {
+                                    msg: format!(
+                                        "self type in trait impl must be {} or &/&mut {}, found {}",
+                                        it.type_name.lexeme, it.type_name.lexeme, other
+                                    ),
+                                    line: m.name.position.line,
+                                    column: m.name.position.column,
+                                });
+                            }
+                        },
+                        other => {
+                            return Err(SemanticError::Generic {
+                                msg: format!(
+                                    "self type in trait impl must be {} or &/&mut {}, found {}",
+                                    it.type_name.lexeme, it.type_name.lexeme, other
+                                ),
+                                line: m.name.position.line,
+                                column: m.name.position.column,
+                            });
+                        }
+                    }
+                } else {
+                    // No annotation => treat as owned
+                    SelfKind::Owned {
+                        ty: RxType::Struct(it.type_name.lexeme.clone()),
+                    }
+                }
+            } else {
+                unreachable!("checked is_empty above");
+            };
+
             let mut param_types = Vec::new();
             for p in m.param_list.params.iter().skip(1) {
                 let ty = self.type_from_ann(p.type_annotation.as_ref(), &p.name)?;
@@ -403,9 +474,7 @@ impl Analyzer {
                     param_types,
                     return_type,
                     token: m.name.clone(),
-                    self_kind: SelfKind::Owned {
-                        ty: RxType::Struct(it.type_name.lexeme.clone()),
-                    },
+                    self_kind,
                 },
             );
         }
@@ -435,6 +504,15 @@ impl Analyzer {
             });
         }
         traits.push(it.trait_name.lexeme.clone());
+
+        // Register concrete impl trait methods as regular methods so that
+        // method dispatch (and self kind checking) uses concrete self_kind.
+        for (name, sig) in methods.into_iter() {
+            self.globe
+                .methods
+                .insert((it.type_name.lexeme.clone(), name), sig);
+        }
+
         Ok(())
     }
 
@@ -447,7 +525,7 @@ impl Analyzer {
             self.globe.declare_var(Symbol {
                 name: param.name.lexeme.clone(),
                 ty: ty,
-                mutable: false,
+                mutable: param.mutable,
                 token: param.name.clone(),
             })?;
         }
@@ -611,6 +689,7 @@ impl Analyzer {
             ExpressionNode::If(i) => Ok(self.analyse_if(i)?),
             ExpressionNode::While(w) => Ok(self.analyse_while(w)?),
             ExpressionNode::Call(c) => Ok(self.analyse_call(c)?),
+            ExpressionNode::MethodCall(mc) => Ok(self.analyse_method_call(mc)?),
             ExpressionNode::Member(m) => Ok(self.analyse_member(m)?),
             ExpressionNode::StructLiteral(sl) => Ok(self.analyse_struct_literal(sl)?),
             ExpressionNode::StaticMember(sm) => {
@@ -1182,123 +1261,153 @@ impl Analyzer {
                 }
                 Ok(sig.return_type)
             }
-            ExpressionNode::Member(MemberExprNode { object, field }) => {
-                let recv_expr_ty = self.analyse_expression(&object)?;
-                // Extract struct name from receiver type (auto-deref for lookup), but keep original for mutability check
-                let struct_name = match recv_expr_ty.clone() {
-                    RxType::Struct(s) => s,
-                    RxType::Ref(inner, _) => match *inner {
-                        RxType::Struct(s) => s,
-                        other => {
-                            return Err(SemanticError::Generic {
-                                msg: format!(
-                                    "Method call receiver must be struct, found {}",
-                                    other
-                                ),
-                                line: field.position.line,
-                                column: field.position.column,
-                            });
-                        }
-                    },
-                    other => {
-                        return Err(SemanticError::Generic {
-                            msg: format!("Method call receiver must be struct, found {}", other),
-                            line: field.position.line,
-                            column: field.position.column,
-                        });
-                    }
-                };
-                let method_name = field.lexeme.clone();
-                let sig = if let Some(sig) = self
-                    .globe
-                    .methods
-                    .get(&(struct_name.clone(), method_name.clone()))
-                    .cloned()
-                {
-                    sig
-                } else {
-                    let mut found: Option<FuncSig> = None;
-                    for trait_name in self.globe.impl_traits.get(&struct_name).unwrap_or(&vec![]) {
-                        if let Some(sig) = self
-                            .globe
-                            .traits
-                            .get(trait_name)
-                            .unwrap_or(&HashMap::new())
-                            .get(&method_name)
-                            .cloned()
-                        {
-                            found = Some(sig);
-                            break;
-                        }
-                    }
-                    if let Some(sig) = found {
-                        sig
-                    } else {
-                        return Err(SemanticError::UnknownCallee {
-                            name: format!("{}::{}", struct_name, method_name),
-                            line: field.position.line,
-                            column: field.position.column,
-                        });
-                    }
-                };
-                let expected_owned = RxType::Struct(struct_name.clone());
-                let expected_borrow = RxType::Ref(Box::new(expected_owned.clone()), false);
-                let expected_borrow_mut = RxType::Ref(Box::new(expected_owned.clone()), true);
-                let ok_recv = match &sig.self_kind {
-                    SelfKind::Owned { ty } => recv_expr_ty == *ty,
-                    SelfKind::Borrowed { ty } => {
-                        recv_expr_ty == RxType::Ref(Box::new(ty.clone()), false)
-                    }
-                    SelfKind::BorrowedMut { ty } => {
-                        recv_expr_ty == RxType::Ref(Box::new(ty.clone()), true)
-                    }
-                    SelfKind::TraitSelf => true,
-                    SelfKind::None => false,
-                };
-                if !ok_recv {
-                    return Err(SemanticError::ArgTypeMismatched {
-                        callee: format!("{}.{}", struct_name, method_name),
-                        index: 0,
-                        expected: match sig.self_kind {
-                            SelfKind::Owned { .. } => expected_owned,
-                            SelfKind::Borrowed { .. } => expected_borrow,
-                            SelfKind::BorrowedMut { .. } => expected_borrow_mut,
-                            SelfKind::TraitSelf | SelfKind::None => expected_owned,
-                        },
-                        found: recv_expr_ty,
-                        line: field.position.line,
-                        column: field.position.column,
-                    });
-                }
-                if sig.param_types.len() != c.args.len() {
-                    return Err(SemanticError::ArgsNumMismatched {
-                        callee: format!("{}.{}", struct_name, method_name),
-                        expected: sig.param_types.len(),
-                        found: c.args.len(),
-                        line: field.position.line,
-                        column: field.position.column,
-                    });
-                }
-                for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
-                    let at = self.analyse_expression(arg)?;
-                    if *pt != at {
-                        return Err(SemanticError::ArgTypeMismatched {
-                            callee: format!("{}.{}", struct_name, method_name),
-                            index: i + 1,
-                            expected: pt.clone(),
-                            found: at.clone(),
-                            line: field.position.line,
-                            column: field.position.column,
-                        });
-                    }
-                }
-                Ok(sig.return_type)
-            }
             _ => Err(SemanticError::Generic {
                 msg: "Only simple function or method calls are supported".to_string(),
                 line: 0,
                 column: 0,
             }),
+        }
+    }
+
+    fn analyse_method_call(&mut self, mc: &MethodCallExprNode) -> SemanticResult<RxType> {
+        let obj_expr_ty = self.analyse_expression(&mc.object)?;
+        let struct_name = match obj_expr_ty.clone() {
+            RxType::Struct(s) => s,
+            RxType::Ref(inner, _) => match *inner {
+                RxType::Struct(s) => s,
+                other => {
+                    return Err(SemanticError::Generic {
+                        msg: format!("Method call receiver must be struct, found {}", other),
+                        line: mc.method.position.line,
+                        column: mc.method.position.column,
+                    });
+                }
+            },
+            other => {
+                return Err(SemanticError::Generic {
+                    msg: format!("Method call receiver must be struct, found {}", other),
+                    line: mc.method.position.line,
+                    column: mc.method.position.column,
+                });
+            }
+        };
+        let method_name = mc.method.lexeme.clone();
+        let sig = if let Some(sig) = self
+            .globe
+            .methods
+            .get(&(struct_name.clone(), method_name.clone()))
+            .cloned()
+        {
+            sig
+        } else {
+            let mut found: Option<FuncSig> = None;
+            for trait_name in self.globe.impl_traits.get(&struct_name).unwrap_or(&vec![]) {
+                if let Some(sig) = self
+                    .globe
+                    .traits
+                    .get(trait_name)
+                    .unwrap_or(&HashMap::new())
+                    .get(&method_name)
+                    .cloned()
+                {
+                    found = Some(sig);
+                    break;
+                }
+            }
+            if let Some(sig) = found {
+                sig
+            } else {
+                return Err(SemanticError::UnknownCallee {
+                    name: format!("{}::{}", struct_name, method_name),
+                    line: mc.method.position.line,
+                    column: mc.method.position.column,
+                });
+            }
+        };
+
+        let expected_owned = RxType::Struct(struct_name.clone());
+        let expected_borrow = RxType::Ref(Box::new(expected_owned.clone()), false);
+        let expected_borrow_mut = RxType::Ref(Box::new(expected_owned.clone()), true);
+
+        // Auto-borrow / auto-deref rules support
+        // - If method expects &T, and we have T, allow (auto borrow)
+        // - If method expects &T, and we have &mut T, allow (auto deref and borrow)
+        // - If method expects &mut T, and we have mutable T, allow (auto borrow mut)
+        // - If method expects T and we have &T or &mut T, allow for T impl Copy (currently not inspected) (auto deref and copy)
+        let ok_obj = match &sig.self_kind {
+            SelfKind::Owned { ty } => match &obj_expr_ty {
+                t if t == ty => true,
+                RxType::Ref(inner, _) if **inner == *ty => true,
+                _ => false,
+            },
+            SelfKind::Borrowed { ty } => match &obj_expr_ty {
+                t if t == ty => true,
+                RxType::Ref(inner, _) if **inner == *ty => true,
+                _ => false,
+            },
+            SelfKind::BorrowedMut { ty } => match &obj_expr_ty {
+                RxType::Ref(inner, mutable) if **inner == *ty && *mutable => true,
+                t if t == ty => self.is_mutable_lvalue(&mc.object),
+                _ => false,
+            },
+            // trait map entries not used directly for dispatch (impl registered separately)
+            SelfKind::TraitOwned | SelfKind::TraitBorrowed | SelfKind::TraitBorrowedMut => true,
+            SelfKind::None => false,
+        };
+
+        if !ok_obj {
+            return Err(SemanticError::ArgTypeMismatched {
+                callee: format!("{}.{}", struct_name, method_name),
+                index: 0,
+                expected: match sig.self_kind {
+                    SelfKind::Owned { .. } => expected_owned,
+                    SelfKind::Borrowed { .. } => expected_borrow,
+                    SelfKind::BorrowedMut { .. } => expected_borrow_mut,
+                    _ => expected_owned,
+                },
+                found: obj_expr_ty,
+                line: mc.method.position.line,
+                column: mc.method.position.column,
+            });
+        }
+        if sig.param_types.len() != mc.args.len() {
+            return Err(SemanticError::ArgsNumMismatched {
+                callee: format!("{}.{}", struct_name, method_name),
+                expected: sig.param_types.len(),
+                found: mc.args.len(),
+                line: mc.method.position.line,
+                column: mc.method.position.column,
+            });
+        }
+        for (i, (pt, arg)) in sig.param_types.iter().zip(&mc.args).enumerate() {
+            let at = self.analyse_expression(arg)?;
+            if *pt != at {
+                return Err(SemanticError::ArgTypeMismatched {
+                    callee: format!("{}.{}", struct_name, method_name),
+                    index: i + 1,
+                    expected: pt.clone(),
+                    found: at.clone(),
+                    line: mc.method.position.line,
+                    column: mc.method.position.column,
+                });
+            }
+        }
+        Ok(sig.return_type)
+    }
+
+    fn is_mutable_lvalue(&self, expr: &ExpressionNode) -> bool {
+        match expr {
+            ExpressionNode::Identifier(tok) => self
+                .globe
+                .lookup_var(&tok.lexeme)
+                .map(|s| match &s.ty {
+                    RxType::Ref(_, mutable) => *mutable,
+                    _ => s.mutable,
+                })
+                .unwrap_or(false),
+            ExpressionNode::Index(IndexExprNode { array, .. }) => self.is_mutable_lvalue(array),
+            ExpressionNode::Member(MemberExprNode { object, .. }) => self.is_mutable_lvalue(object),
+            _ => false,
         }
     }
 
@@ -1344,6 +1453,15 @@ impl Analyzer {
             } => {
                 let t = self.type_from_node(&inner_type)?;
                 RxType::Ref(Box::new(t), *mutable)
+            }
+            TypeNode::SelfRef { mutable } => {
+                return Err(SemanticError::Generic {
+                    msg: format!(
+                        "unexpected bare self reference type (mutable={mutable}) after desugaring"
+                    ),
+                    line: 0,
+                    column: 0,
+                });
             }
             TypeNode::Named(token) => {
                 let name = token.lexeme.clone();
@@ -1396,31 +1514,26 @@ impl Analyzer {
                         column: impl_sig.token.position.column,
                     });
                 }
-                // Ensure trait uses TraitSelf and impl provides a concrete self kind (owned or borrowed)
-                if trait_sig.self_kind != SelfKind::TraitSelf {
+                // Ensure trait self kind matches impl self kind
+                // Validate self kind compatibility
+                let ok_self = match (&trait_sig.self_kind, &impl_sig.self_kind) {
+                    (SelfKind::TraitOwned, SelfKind::Owned { .. }) => true,
+                    (SelfKind::TraitBorrowed, SelfKind::Borrowed { .. }) => true,
+                    (SelfKind::TraitBorrowedMut, SelfKind::BorrowedMut { .. }) => true,
+                    _ => false,
+                };
+                if !ok_self {
                     return Err(SemanticError::TraitMethodSignatureMismatch {
                         trait_name: trait_name.to_string(),
                         type_name: type_name.to_string(),
                         method: name.clone(),
-                        detail: "trait method must have self".to_string(),
+                        detail: format!(
+                            "self kind mismatch: trait requires {:?}, impl provides {:?}",
+                            trait_sig.self_kind, impl_sig.self_kind
+                        ),
                         line: impl_sig.token.position.line,
                         column: impl_sig.token.position.column,
                     });
-                }
-                match impl_sig.self_kind {
-                    SelfKind::Owned { .. }
-                    | SelfKind::Borrowed { .. }
-                    | SelfKind::BorrowedMut { .. } => {}
-                    _ => {
-                        return Err(SemanticError::TraitMethodSignatureMismatch {
-                            trait_name: trait_name.to_string(),
-                            type_name: type_name.to_string(),
-                            method: name.clone(),
-                            detail: "impl method must have self".to_string(),
-                            line: impl_sig.token.position.line,
-                            column: impl_sig.token.position.column,
-                        });
-                    }
                 }
             } else {
                 return Err(SemanticError::MissingTraitImplMethod {

@@ -102,9 +102,27 @@ impl Parser {
             if let Some(first) = method.param_list.params.get_mut(0) {
                 if std::mem::discriminant(&first.name.token_type)
                     == std::mem::discriminant(&TokenType::SelfLower)
-                    && first.type_annotation.is_none()
                 {
-                    first.type_annotation = Some(TypeNode::Named(type_name.clone()));
+                    match &mut first.type_annotation {
+                        Some(TypeNode::SelfRef { mutable }) => {
+                            let concrete_type = if *mutable {
+                                TypeNode::Ref {
+                                    inner_type: Box::new(TypeNode::Named(type_name.clone())),
+                                    mutable: true,
+                                }
+                            } else {
+                                TypeNode::Ref {
+                                    inner_type: Box::new(TypeNode::Named(type_name.clone())),
+                                    mutable: false,
+                                }
+                            };
+                            first.type_annotation = Some(concrete_type);
+                        }
+                        None => {
+                            first.type_annotation = Some(TypeNode::Named(type_name.clone()));
+                        }
+                        _ => {}
+                    }
                 }
             }
             methods.push(method);
@@ -150,11 +168,16 @@ impl Parser {
                 } else {
                     false
                 };
-                let inner_type = self.parse_type()?;
-                Ok(TypeNode::Ref {
-                    inner_type: Box::new(inner_type),
-                    mutable,
-                })
+                if self.check_type(&TokenType::SelfLower) {
+                    self.advance();
+                    Ok(TypeNode::SelfRef { mutable })
+                } else {
+                    let inner_type = self.parse_type()?;
+                    Ok(TypeNode::Ref {
+                        inner_type: Box::new(inner_type),
+                        mutable,
+                    })
+                }
             }
             TokenType::I32 => {
                 self.advance();
@@ -485,10 +508,19 @@ impl Parser {
             // Function call as postfix operator: highest precedence
             if self.check_type(&TokenType::LParen) {
                 let args = self.parse_argument_list()?;
-                lhs = ExpressionNode::Call(CallExprNode {
-                    function: Box::new(lhs),
-                    args,
-                });
+                lhs = match lhs {
+                    ExpressionNode::Member(MemberExprNode { object, field }) => {
+                        ExpressionNode::MethodCall(MethodCallExprNode {
+                            object: object.clone(),
+                            method: field.clone(),
+                            args,
+                        })
+                    }
+                    other => ExpressionNode::Call(CallExprNode {
+                        function: Box::new(other),
+                        args,
+                    }),
+                };
                 continue;
             }
 
@@ -608,9 +640,27 @@ impl Parser {
             if let Some(first) = method.param_list.params.get_mut(0) {
                 if std::mem::discriminant(&first.name.token_type)
                     == std::mem::discriminant(&TokenType::SelfLower)
-                    && first.type_annotation.is_none()
                 {
-                    first.type_annotation = Some(TypeNode::Named(name.clone()));
+                    match &mut first.type_annotation {
+                        Some(TypeNode::SelfRef { mutable }) => {
+                            let concrete_type = if *mutable {
+                                TypeNode::Ref {
+                                    inner_type: Box::new(TypeNode::Named(name.clone())),
+                                    mutable: true,
+                                }
+                            } else {
+                                TypeNode::Ref {
+                                    inner_type: Box::new(TypeNode::Named(name.clone())),
+                                    mutable: false,
+                                }
+                            };
+                            first.type_annotation = Some(concrete_type);
+                        }
+                        None => {
+                            first.type_annotation = Some(TypeNode::Named(name.clone()));
+                        }
+                        _ => {}
+                    }
                 }
             }
             methods.push(method);
@@ -683,6 +733,32 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> ParseResult<ParamNode> {
+        // Support forms:
+        // 1. (mut) name [: Type]
+        // 2. (mut) self [: Type]
+        // 3. &(mut) self (later desugar -> self: &(mut) Struct)
+        if self.check_type(&TokenType::And) {
+            self.advance();
+            let mutable = if self.check_type(&TokenType::Mut) {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            let self_tok = self.expect_type(&TokenType::SelfLower)?;
+            return Ok(ParamNode {
+                name: self_tok,
+                type_annotation: Some(TypeNode::SelfRef { mutable }),
+                mutable: false,
+            });
+        }
+        let mutable = if self.check_type(&TokenType::Mut) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let name = if self.check_type(&TokenType::Identifier) {
             self.expect_type(&TokenType::Identifier)?
         } else if self.check_type(&TokenType::SelfLower) {
@@ -704,6 +780,7 @@ impl Parser {
         Ok(ParamNode {
             name,
             type_annotation,
+            mutable,
         })
     }
 

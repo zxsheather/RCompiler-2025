@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use frontend::r_lexer::lexer::Lexer;
 use frontend::r_parser::parser::Parser;
+use std::panic::{self, AssertUnwindSafe};
 
 use crate::frontend::r_semantic::analyzer::Analyzer;
 
@@ -15,11 +16,13 @@ fn print_usage() {
         "Usage:
   RCompiler-2025 --ast-json  [INPUT] [--out OUTPUT]
   RCompiler-2025 --ast-pretty [INPUT] [--out OUTPUT]
+    RCompiler-2025 --semantic-test [TESTDIR]
 
 Notes:
   - If INPUT is omitted, source is read from stdin.
   - One of --ast-json or --ast-pretty must be provided.
-  - If --out is omitted, result is printed to stdout."
+    - If --out is omitted, result is printed to stdout.
+    - --semantic-test will run all semantic tests under testcases/semantic-1 by default."
     );
 }
 
@@ -110,12 +113,136 @@ fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
     0
 }
 
+// Compile only for semantic checking (no AST emission). Returns 0 on success, -1 on failure.
+fn compile_semantic(src: &str) -> Result<(), String> {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        // Lex
+        let mut lexer = Lexer::new(src.to_string()).map_err(|e| e.to_string())?;
+        let tokens = lexer.tokenize().map_err(|e| e.to_string())?;
+        // Parse
+        let mut parser = Parser::new(tokens);
+        let nodes = parser.parse().map_err(|e| e.to_string())?;
+        // Analyze
+        let mut analyzer = Analyzer::new();
+        analyzer
+            .analyse_program(&nodes)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }));
+    match result {
+        Ok(inner) => inner,
+        Err(_) => {
+            Err("panic during compilation (likely invalid UTF-8 boundary in lexer)".to_string())
+        }
+    }
+}
+
+fn run_semantic_tests(root: Option<String>) -> i32 {
+    let test_root = root.unwrap_or_else(|| "testcases/semantic-1".to_string());
+    let path = Path::new(&test_root);
+    if !path.exists() {
+        eprintln!("Test root not found: {}", path.display());
+        return 1;
+    }
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut failed_cases: Vec<(String, i32, i32, String)> = Vec::new();
+
+    let entries = match fs::read_dir(path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Cannot read test root {}: {e}", path.display());
+            return 1;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let md = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !md.is_dir() {
+            continue;
+        }
+        let case_dir = entry.path();
+        // Expect exactly one *.rx file inside
+        let mut rx_file: Option<PathBuf> = None;
+        let mut expected_exit: Option<i32> = None;
+        if let Ok(files) = fs::read_dir(&case_dir) {
+            for f in files.flatten() {
+                let p = f.path();
+                if p.extension().map(|s| s == "rx").unwrap_or(false) {
+                    rx_file = Some(p);
+                } else if p
+                    .file_name()
+                    .map(|n| n == "testcase_info.json")
+                    .unwrap_or(false)
+                {
+                    if let Ok(txt) = fs::read_to_string(&p) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                            if let Some(v) = val.get("compileexitcode") {
+                                expected_exit = v.as_i64().map(|i| i as i32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some(rx_path) = rx_file else { continue }; // skip if no source
+        let expected = expected_exit.unwrap_or(0); // default assume success
+        total += 1;
+        let src = match fs::read_to_string(&rx_path) {
+            Ok(s) => s,
+            Err(_) => {
+                failed_cases.push((
+                    case_dir.file_name().unwrap().to_string_lossy().to_string(),
+                    expected,
+                    -999,
+                    "read source failed".to_string(),
+                ));
+                continue;
+            }
+        };
+        let res = compile_semantic(&src);
+        let actual_std = if res.is_ok() { 0 } else { -1 };
+        if actual_std == expected {
+            passed += 1;
+        } else {
+            let err_msg = res.err().unwrap_or_else(|| "<unknown error>".to_string());
+            failed_cases.push((
+                case_dir.file_name().unwrap().to_string_lossy().to_string(),
+                expected,
+                actual_std,
+                err_msg,
+            ));
+        }
+    }
+
+    println!("Semantic tests: {passed}/{total} passed");
+    if !failed_cases.is_empty() {
+        println!("Failed cases:");
+        for (name, exp, act, msg) in &failed_cases {
+            println!("  {name}: expected {exp}, got {act}\n    error: {msg}");
+        }
+        return 1;
+    }
+    0
+}
+
 fn main() {
     let mut args = env::args().skip(1);
     let Some(flag) = args.next() else {
         print_usage();
         return;
     };
+
+    if flag == "--semantic-test" {
+        let maybe_dir = args.next();
+        let code = run_semantic_tests(maybe_dir);
+        if code != 0 { /* failure already reported */ }
+        return;
+    }
 
     let pretty_flag = match flag.as_str() {
         "--ast-pretty" => true,

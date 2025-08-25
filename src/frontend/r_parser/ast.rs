@@ -31,6 +31,9 @@ pub enum TypeNode {
         inner_type: Box<TypeNode>,
         mutable: bool,
     },
+    SelfRef {
+        mutable: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -51,6 +54,7 @@ pub struct ParamListNode {
 pub struct ParamNode {
     pub name: Token,
     pub type_annotation: Option<TypeNode>,
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -168,6 +172,7 @@ pub enum ExpressionNode {
     Unary(UnaryExprNode),
     Binary(BinaryExprNode),
     Call(CallExprNode),
+    MethodCall(MethodCallExprNode),
     Index(IndexExprNode),
     If(Box<IfExprNode>),
     While(Box<WhileExprNode>),
@@ -237,4 +242,11 @@ pub struct StaticMemberExprNode {
 pub struct RefExprNode {
     pub mutable: bool,
     pub operand: Box<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MethodCallExprNode {
+    pub object: Box<ExpressionNode>,
+    pub method: Token,
+    pub args: Vec<ExpressionNode>,
 }
