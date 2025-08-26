@@ -145,31 +145,11 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
         return 1;
     }
 
-    let mut total = 0usize;
-    let mut passed = 0usize;
-    let mut failed_cases: Vec<(String, i32, i32, String)> = Vec::new();
-
-    let entries = match fs::read_dir(path) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Cannot read test root {}: {e}", path.display());
-            return 1;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let md = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if !md.is_dir() {
-            continue;
-        }
-        let case_dir = entry.path();
-        // Expect exactly one *.rx file inside
+    // Helper to run one case directory
+    fn run_case(case_dir: &Path) -> Option<(String, i32, i32, String)> {
         let mut rx_file: Option<PathBuf> = None;
         let mut expected_exit: Option<i32> = None;
-        if let Ok(files) = fs::read_dir(&case_dir) {
+        if let Ok(files) = fs::read_dir(case_dir) {
             for f in files.flatten() {
                 let p = f.path();
                 if p.extension().map(|s| s == "rx").unwrap_or(false) {
@@ -189,33 +169,94 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
                 }
             }
         }
-        let Some(rx_path) = rx_file else { continue }; // skip if no source
-        let expected = expected_exit.unwrap_or(0); // default assume success
-        total += 1;
+        let rx_path = rx_file?;
+        let expected = expected_exit.unwrap_or(0);
         let src = match fs::read_to_string(&rx_path) {
             Ok(s) => s,
             Err(_) => {
-                failed_cases.push((
+                return Some((
                     case_dir.file_name().unwrap().to_string_lossy().to_string(),
                     expected,
                     -999,
                     "read source failed".to_string(),
                 ));
-                continue;
             }
         };
         let res = compile_semantic(&src);
         let actual_std = if res.is_ok() { 0 } else { -1 };
         if actual_std == expected {
-            passed += 1;
+            None
         } else {
-            let err_msg = res.err().unwrap_or_else(|| "<unknown error>".to_string());
-            failed_cases.push((
+            Some((
                 case_dir.file_name().unwrap().to_string_lossy().to_string(),
                 expected,
                 actual_std,
-                err_msg,
-            ));
+                res.err().unwrap_or_else(|| "<unknown error>".to_string()),
+            ))
+        }
+    }
+
+    // Decide whether path itself is a single case.
+    let is_single_case = path.is_dir()
+        && fs::read_dir(path)
+            .ok()
+            .map(|mut it| {
+                it.any(|e| {
+                    e.ok()
+                        .map(|f| f.path().extension().map(|s| s == "rx").unwrap_or(false))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+        && fs::read_dir(path)
+            .ok()
+            .map(|mut it| {
+                it.any(|e| {
+                    e.ok()
+                        .map(|f| {
+                            f.path()
+                                .file_name()
+                                .map(|n| n == "testcase_info.json")
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut failed_cases: Vec<(String, i32, i32, String)> = Vec::new();
+
+    if is_single_case {
+        total = 1;
+        if let Some(fail) = run_case(path) {
+            failed_cases.push(fail);
+        } else {
+            passed = 1;
+        }
+    } else {
+        let entries = match fs::read_dir(path) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Cannot read test root {}: {e}", path.display());
+                return 1;
+            }
+        };
+        for entry in entries.flatten() {
+            let md = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if !md.is_dir() {
+                continue;
+            }
+            total += 1; // count first; adjust inside run_case
+            if let Some(fail) = run_case(&entry.path()) {
+                failed_cases.push(fail);
+            } else {
+                passed += 1;
+            }
         }
     }
 

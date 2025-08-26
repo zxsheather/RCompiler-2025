@@ -693,3 +693,70 @@ fn array_repeat_type_mismatch_inside_assignment() {
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("Type mismatch in assignment"), "err: {err}");
 }
+
+// ===== Compound assignment operators tests =====
+
+#[test]
+fn compound_assign_var_ok() {
+    let src = r#"
+        fn main() { let mut x: i32 = 1; x += 2; x -= 1; x *= 3; x /= 2; x %= 2; x &= 1; x |= 2; x ^= 3; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn compound_assign_var_immutable_error() {
+    let src = r#"fn main() { let x: i32 = 1; x += 2; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn compound_assign_var_type_mismatch_error() {
+    let src = r#"fn main() { let mut x: i32 = 1; x += true; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("Type mismatch"), "err: {err}");
+}
+
+#[test]
+fn compound_assign_array_elem_ok() {
+    let src = r#"fn main() { let mut a: [i32; 2] = [1,2]; a[0] += 3; }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn compound_assign_array_elem_immutable_error() {
+    let src = r#"fn main() { let a: [i32; 2] = [1,2]; a[0] += 3; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn compound_assign_struct_field_ok() {
+    let src = r#"
+        struct P { x: i32 }
+        fn main() { let mut p: P = P { x: 1 }; p.x += 2; }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn compound_assign_struct_field_immutable_error() {
+    let src = r#"
+        struct P { x: i32 }
+        fn main() { let p: P = P { x: 1 }; p.x += 2; }
+    "#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("immutable"), "err: {err}");
+}
+
+#[test]
+fn if_then_else_assigns_ok() {
+    let src = r#"
+        fn main() {
+            let mut flag: bool = true;
+            if flag { flag = false; } else { flag = true; }
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}

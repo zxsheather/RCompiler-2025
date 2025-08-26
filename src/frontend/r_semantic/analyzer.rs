@@ -893,145 +893,54 @@ impl Analyzer {
                 }
             }
 
-            Eq => match &*b.left_operand {
-                ExpressionNode::Identifier(token) => {
-                    let Some(symbol) = self.globe.lookup_var(&token.lexeme) else {
-                        return Err(SemanticError::UndefinedIdentifier {
-                            name: token.lexeme.clone(),
-                            line,
-                            column,
-                        });
-                    };
-                    if !symbol.mutable {
-                        return Err(SemanticError::AssignImmutableVar {
-                            name: token.lexeme.clone(),
-                            line,
-                            column,
-                        });
-                    }
-
-                    if rt != symbol.ty {
-                        return Err(SemanticError::AssignTypeMismatched {
-                            expected: symbol.ty.clone(),
-                            found: rt,
-                            line,
-                            column,
-                        });
-                    }
-
-                    Ok(symbol.ty.clone())
+            PlusEq | MinusEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq => {
+                // Treat as: l = l <op> r
+                if !self.is_mutable_lvalue(&b.left_operand) {
+                    return Err(SemanticError::AssignImmutableVar {
+                        name: "<expr>".to_string(),
+                        line,
+                        column,
+                    });
                 }
-                ExpressionNode::Index(IndexExprNode { array, index: _ }) => {
-                    if let ExpressionNode::Identifier(tok) = &**array {
-                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
-                            return Err(SemanticError::UndefinedIdentifier {
-                                name: tok.lexeme.clone(),
-                                line,
-                                column,
-                            });
-                        };
-                        let can_write = match &symbol.ty {
-                            RxType::Ref(_, is_mut) => *is_mut,
-                            _ => symbol.mutable,
-                        };
-                        if !can_write {
-                            return Err(SemanticError::AssignImmutableVar {
-                                name: tok.lexeme.clone(),
-                                line,
-                                column,
-                            });
-                        }
-
-                        if rt != lt {
-                            return Err(SemanticError::AssignTypeMismatched {
-                                expected: lt.clone(),
-                                found: rt,
-                                line,
-                                column,
-                            });
-                        }
-                        Ok(lt)
-                    } else {
-                        Err(SemanticError::InvalidLValueType { line, column })
-                    }
+                // For now require integer arithmetic just like simple + - * /
+                if !lt.is_integer() {
+                    return Err(SemanticError::ArityMismatch {
+                        operator: op_token.as_str().to_string(),
+                        expected_type: "numeric type".to_string(),
+                        found: lt,
+                        line,
+                        column,
+                    });
                 }
-                ExpressionNode::Member(MemberExprNode { object, field }) => {
-                    if let ExpressionNode::Identifier(tok) = &**object {
-                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
-                            return Err(SemanticError::UndefinedIdentifier {
-                                name: tok.lexeme.clone(),
-                                line,
-                                column,
-                            });
-                        };
-
-                        let (struct_name, can_write) = match &symbol.ty {
-                            RxType::Struct(s) => (s.clone(), symbol.mutable),
-                            RxType::Ref(inner, is_mut) => match &**inner {
-                                RxType::Struct(s) => (s.clone(), *is_mut),
-                                other => {
-                                    return Err(SemanticError::Generic {
-                                        msg: format!(
-                                            "Member assignment requires struct, found {}",
-                                            other
-                                        ),
-                                        line,
-                                        column,
-                                    });
-                                }
-                            },
-                            other => {
-                                return Err(SemanticError::Generic {
-                                    msg: format!(
-                                        "Member assignment requires struct, found {}",
-                                        other
-                                    ),
-                                    line,
-                                    column,
-                                });
-                            }
-                        };
-                        if !can_write {
-                            return Err(SemanticError::AssignImmutableVar {
-                                name: tok.lexeme.clone(),
-                                line,
-                                column,
-                            });
-                        }
-
-                        let Some(field_map) = self.globe.structs.get(&struct_name) else {
-                            return Err(SemanticError::UnknownStruct {
-                                name: struct_name,
-                                line,
-                                column,
-                            });
-                        };
-
-                        let Some(expected_ty) = field_map.get(&field.lexeme) else {
-                            return Err(SemanticError::UnknownStructField {
-                                name: struct_name,
-                                field: field.lexeme.clone(),
-                                line,
-                                column,
-                            });
-                        };
-
-                        if rt != *expected_ty {
-                            return Err(SemanticError::AssignTypeMismatched {
-                                expected: expected_ty.clone(),
-                                found: rt,
-                                line,
-                                column,
-                            });
-                        }
-
-                        Ok(expected_ty.clone())
-                    } else {
-                        Err(SemanticError::InvalidLValueType { line, column })
-                    }
+                if lt != rt {
+                    return Err(SemanticError::AssignTypeMismatched {
+                        expected: lt.clone(),
+                        found: rt,
+                        line,
+                        column,
+                    });
                 }
-                _ => Err(SemanticError::InvalidLValueType { line, column }),
-            },
+                Ok(lt)
+            }
+
+            Eq => {
+                if !self.is_mutable_lvalue(&b.left_operand) {
+                    return Err(SemanticError::AssignImmutableVar {
+                        name: "<expr>".to_string(),
+                        line,
+                        column,
+                    });
+                }
+                if lt != rt {
+                    return Err(SemanticError::AssignTypeMismatched {
+                        expected: lt.clone(),
+                        found: rt,
+                        line,
+                        column,
+                    });
+                }
+                Ok(lt)
+            }
             _ => Err(SemanticError::Generic {
                 msg: "Unsupported binary operator".to_string(),
                 line,
