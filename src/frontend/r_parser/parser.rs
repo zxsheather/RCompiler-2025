@@ -459,13 +459,20 @@ impl Parser {
                         member: member,
                     })
                 } else if self.check_type(&TokenType::LBrace) {
-                    if let Some(t1) = self.peek_safe() {
-                        if matches!(t1.token_type, TokenType::Identifier) {
-                            let fields = self.parse_struct_literal_fields()?;
-                            ExpressionNode::StructLiteral(StructLiteralNode { name: tok, fields })
+                    let is_struct_literal = if let Some(t1) = self.peek_safe() {
+                        if !matches!(t1.token_type, TokenType::Identifier) {
+                            false
+                        } else if let Some(t2) = self.peek_n_safe(2) {
+                            matches!(t2.token_type, TokenType::Colon | TokenType::Comma)
                         } else {
-                            ExpressionNode::Identifier(tok)
+                            false
                         }
+                    } else {
+                        false
+                    };
+                    if is_struct_literal {
+                        let fields = self.parse_struct_literal_fields()?;
+                        ExpressionNode::StructLiteral(StructLiteralNode { name: tok, fields })
                     } else {
                         ExpressionNode::Identifier(tok)
                     }
@@ -569,7 +576,15 @@ impl Parser {
     fn infix_binding_power(&self, tt: &TokenType) -> Option<(u8, u8)> {
         // Return (left_bp, right_bp) pairs.
         match tt {
-            TokenType::Eq => Some((10, 9)),
+            TokenType::Eq
+            | TokenType::PlusEq
+            | TokenType::MinusEq
+            | TokenType::MulEq
+            | TokenType::DivEq
+            | TokenType::ModEq
+            | TokenType::AndEq
+            | TokenType::OrEq
+            | TokenType::XorEq => Some((10, 9)),
             TokenType::OrOr => Some((30, 31)),
             TokenType::AndAnd => Some((40, 41)),
             TokenType::Or => Some((50, 51)),
