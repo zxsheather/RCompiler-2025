@@ -9,6 +9,8 @@ pub enum RxType {
     IntLiteral, // untyped integer literal (no suffix)
     Bool,
     String,
+    Str,
+    Char,
     Unit,
     Tuple(Vec<RxType>),
     Array(Box<RxType>, Option<usize>),
@@ -28,7 +30,9 @@ impl fmt::Display for RxType {
             RxType::USize => write!(f, "usize"),
             RxType::Bool => write!(f, "bool"),
             RxType::IntLiteral => write!(f, "<int>"),
-            RxType::String => write!(f, "string"),
+            RxType::String => write!(f, "String"),
+            RxType::Char => write!(f, "char"),
+            RxType::Str => write!(f, "str"),
             RxType::Unit => write!(f, "()"),
             RxType::Tuple(elems_tys) => {
                 let elems: Vec<String> = elems_tys.iter().map(|t| t.to_string()).collect();
@@ -89,11 +93,22 @@ impl RxType {
                 };
                 Some(RxType::Array(Box::new(new_ty), *size_a))
             }
-            (RxType::Ref(inner_a, mut_a), RxType::Ref(inner_b, mut_b)) if mut_a == mut_b => {
+            (RxType::Ref(inner_a, mut_a), RxType::Ref(inner_b, mut_b)) => {
                 let Some(new_ty) = RxType::unify(&inner_a, &inner_b) else {
                     return None;
                 };
-                Some(RxType::Ref(Box::new(new_ty), *mut_a))
+                if !mut_a && *mut_b {
+                    // &T with &mut T => &T
+                    Some(RxType::Ref(Box::new(new_ty), false))
+                } else if *mut_a && !mut_b {
+                    // &mut T with &T => &T
+                    Some(RxType::Ref(Box::new(new_ty), false))
+                } else if mut_a == mut_b {
+                    // same mutability
+                    Some(RxType::Ref(Box::new(new_ty), *mut_a))
+                } else {
+                    None
+                }
             }
             (RxType::Tuple(elems_a), RxType::Tuple(elems_b)) if elems_a.len() == elems_b.len() => {
                 let mut new_elems = Vec::new();
@@ -112,6 +127,20 @@ impl RxType {
                     None
                 }
             }
+        }
+    }
+
+    pub fn method_key(&self) -> String {
+        match self {
+            RxType::Struct(name) => name.clone(),
+            RxType::U32 => "u32".to_string(),
+            RxType::USize => "usize".to_string(),
+            RxType::String => "String".to_string(),
+            RxType::Char => "char".to_string(),
+            RxType::Str => "str".to_string(),
+            RxType::Array(_, _) => "Array".to_string(),
+            RxType::Ref(inner, _) => inner.method_key(),
+            _ => "".to_string(),
         }
     }
 }

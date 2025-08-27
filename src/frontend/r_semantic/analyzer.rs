@@ -10,6 +10,7 @@ use crate::frontend::{
         TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
+        built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
         error::{SemanticError, SemanticResult},
         types::RxType,
     },
@@ -44,6 +45,17 @@ pub struct FuncSig {
     return_type: RxType,
     token: Token,
     self_kind: SelfKind,
+}
+
+impl FuncSig {
+    pub fn new(param_types: Vec<RxType>, return_type: RxType, self_kind: SelfKind) -> Self {
+        Self {
+            param_types,
+            return_type,
+            token: Token::default(),
+            self_kind,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,9 +162,43 @@ impl Analyzer {
         }
     }
 
-    fn add_built_in_functions(&mut self) {}
+    fn add_built_ins(&mut self) -> SemanticResult<()> {
+        // built-in functions
+        for (name, sig) in get_built_in_funcs() {
+            self.globe.declare_fn(
+                name.to_string(),
+                sig.param_types,
+                sig.return_type,
+                sig.token.clone(),
+            )?;
+        }
+
+        // built in structs
+        self.globe.structs.insert("String".into(), HashMap::new());
+        self.globe.structs.insert("U32".into(), HashMap::new());
+        self.globe.structs.insert("USize".into(), HashMap::new());
+        self.globe.structs.insert("Str".into(), HashMap::new());
+        self.globe.structs.insert("Array".into(), HashMap::new());
+
+        // built-in methods
+        for (ty, name, sig) in get_built_in_methods() {
+            self.globe
+                .methods
+                .insert((ty.into(), name.into()), sig.clone());
+        }
+
+        // built-in static methods
+        for (ty, name, sig) in get_built_in_static_methods() {
+            self.globe
+                .static_methods
+                .insert((ty.into(), name.into()), sig.clone());
+        }
+
+        Ok(())
+    }
 
     pub fn analyse_program(&mut self, nodes: &[AstNode]) -> SemanticResult<()> {
+        self.add_built_ins()?;
         for node in nodes {
             match node {
                 AstNode::Function(func) => {
@@ -678,7 +724,8 @@ impl Analyzer {
                     Ok(RxType::IntLiteral)
                 }
             }
-            ExpressionNode::StringLiteral(_) => Ok(RxType::String),
+            ExpressionNode::StringLiteral(_) => Ok(RxType::Ref(Box::new(RxType::Str), false)),
+            ExpressionNode::CharLiteral(_) => Ok(RxType::Char),
             ExpressionNode::BoolLiteral(_) => Ok(RxType::Bool),
             ExpressionNode::Block(b) => Ok(self.analyse_block(b)?),
             ExpressionNode::ArrayLiteral(arr) => {
@@ -1338,6 +1385,11 @@ impl Analyzer {
             RxType::Struct(s) => s,
             RxType::Ref(inner, _) => match *inner {
                 RxType::Struct(s) => s,
+                RxType::String => "String".to_string(),
+                RxType::Array(..) => "Array".to_string(),
+                RxType::Str => "str".to_string(),
+                RxType::USize => "usize".to_string(),
+                RxType::U32 => "u32".to_string(),
                 other => {
                     return Err(SemanticError::Generic {
                         msg: format!("Method call receiver must be struct, found {}", other),
@@ -1346,6 +1398,11 @@ impl Analyzer {
                     });
                 }
             },
+            RxType::String => "String".to_string(),
+            RxType::Array(..) => "Array".to_string(),
+            RxType::Str => "str".to_string(),
+            RxType::USize => "usize".to_string(),
+            RxType::U32 => "u32".to_string(),
             other => {
                 return Err(SemanticError::Generic {
                     msg: format!("Method call receiver must be struct, found {}", other),
@@ -1355,6 +1412,24 @@ impl Analyzer {
             }
         };
         let method_name = mc.method.lexeme.clone();
+        let key = obj_expr_ty.method_key();
+        if key.is_empty() {
+            return Err(SemanticError::Generic {
+                msg: "Method call receiver must be struct or special type".to_string(),
+                line: mc.method.position.line,
+                column: mc.method.position.column,
+            });
+        }
+        let sig = self
+            .globe
+            .methods
+            .get(&(key.clone(), method_name.clone()))
+            .cloned()
+            .ok_or_else(|| SemanticError::UnknownCallee {
+                name: format!("{}::{}", key, method_name),
+                line: mc.method.position.line,
+                column: mc.method.position.column,
+            })?;
         let sig = if let Some(sig) = self
             .globe
             .methods
@@ -1388,46 +1463,59 @@ impl Analyzer {
             }
         };
 
-        let expected_owned = RxType::Struct(struct_name.clone());
-        let expected_borrow = RxType::Ref(Box::new(expected_owned.clone()), false);
-        let expected_borrow_mut = RxType::Ref(Box::new(expected_owned.clone()), true);
-
-        // Auto-borrow / auto-deref rules support
-        // - If method expects &T, and we have T, allow (auto borrow)
-        // - If method expects &T, and we have &mut T, allow (auto deref and borrow)
-        // - If method expects &mut T, and we have mutable T, allow (auto borrow mut)
-        // - If method expects T and we have &T or &mut T, allow for T impl Copy (currently not inspected) (auto deref and copy)
-        let ok_obj = match &sig.self_kind {
-            SelfKind::Owned { ty } => match &obj_expr_ty {
-                t if t == ty => true,
-                RxType::Ref(inner, _) if **inner == *ty => true,
-                _ => false,
-            },
-            SelfKind::Borrowed { ty } => match &obj_expr_ty {
-                t if t == ty => true,
-                RxType::Ref(inner, _) if **inner == *ty => true,
-                _ => false,
-            },
-            SelfKind::BorrowedMut { ty } => match &obj_expr_ty {
-                RxType::Ref(inner, mutable) if **inner == *ty && *mutable => true,
-                t if t == ty => self.is_mutable_lvalue(&mc.object),
-                _ => false,
-            },
-            // trait map entries not used directly for dispatch (impl registered separately)
-            SelfKind::TraitOwned | SelfKind::TraitBorrowed | SelfKind::TraitBorrowedMut => true,
-            SelfKind::None => false,
+        let (receiver_ok, expected_self_type) = match &sig.self_kind {
+            SelfKind::Owned { ty } => {
+                // allow owned T, &T, &mut T
+                let mut base = obj_expr_ty.clone();
+                if let RxType::Ref(inner, _) = base {
+                    base = *inner;
+                }
+                (base == *ty, ty.clone())
+            }
+            SelfKind::Borrowed { ty } => {
+                let mut base = obj_expr_ty.clone();
+                if let RxType::Ref(inner, _) = base {
+                    base = *inner;
+                }
+                // owned T auto-borrows; for wildcard array treat any array as match
+                let ok = match (&base, ty) {
+                    (RxType::Array(_, _), RxType::Array(_, _)) => true,
+                    _ => base == *ty,
+                };
+                (ok, RxType::Ref(Box::new(ty.clone()), false))
+            }
+            SelfKind::BorrowedMut { ty } => {
+                // require either &mut T, or mutable owned lvalue T (auto &mut). Reject immutable.
+                let base = obj_expr_ty.clone();
+                if let RxType::Ref(inner, is_mut) = &obj_expr_ty {
+                    if **inner == *ty && *is_mut {
+                        (true, RxType::Ref(Box::new(ty.clone()), true))
+                    } else {
+                        (false, RxType::Ref(Box::new(ty.clone()), true))
+                    }
+                } else {
+                    // owned
+                    let mut base2 = base.clone();
+                    if let RxType::Ref(inner, _) = base2 {
+                        base2 = *inner;
+                    }
+                    if base2 == *ty {
+                        (
+                            self.is_mutable_lvalue(&mc.object),
+                            RxType::Ref(Box::new(ty.clone()), true),
+                        )
+                    } else {
+                        (false, RxType::Ref(Box::new(ty.clone()), true))
+                    }
+                }
+            }
+            _ => (true, RxType::Unit),
         };
-
-        if !ok_obj {
+        if !receiver_ok {
             return Err(SemanticError::ArgTypeMismatched {
-                callee: format!("{}.{}", struct_name, method_name),
+                callee: format!("{}::{}", key, method_name),
                 index: 0,
-                expected: match sig.self_kind {
-                    SelfKind::Owned { .. } => expected_owned,
-                    SelfKind::Borrowed { .. } => expected_borrow,
-                    SelfKind::BorrowedMut { .. } => expected_borrow_mut,
-                    _ => expected_owned,
-                },
+                expected: expected_self_type,
                 found: obj_expr_ty,
                 line: mc.method.position.line,
                 column: mc.method.position.column,
@@ -1494,6 +1582,8 @@ impl Analyzer {
             TypeNode::Bool(_) => RxType::Bool,
             TypeNode::String(_) => RxType::String,
             TypeNode::Unit => RxType::Unit,
+            TypeNode::Str(_) => RxType::Str,
+            TypeNode::Char(_) => RxType::Char,
             TypeNode::Tuple(tys) => {
                 let mut rxtypes = Vec::with_capacity(tys.len());
                 for ty in tys {

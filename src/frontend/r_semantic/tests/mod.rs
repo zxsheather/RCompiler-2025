@@ -1,6 +1,8 @@
 use crate::frontend::r_lexer::lexer::Lexer;
 use crate::frontend::r_parser::parser::Parser;
 use crate::frontend::r_semantic::analyzer::Analyzer;
+pub mod built_in;
+pub mod string_char;
 
 fn analyze_src(src: &str) -> Result<(), String> {
     let mut lexer = Lexer::new(src.to_string()).map_err(|e| format!("lex init: {e}"))?;

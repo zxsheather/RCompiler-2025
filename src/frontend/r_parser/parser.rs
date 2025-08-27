@@ -199,6 +199,18 @@ impl Parser {
                 self.advance();
                 Ok(TypeNode::Bool(token))
             }
+            TokenType::StringType => {
+                self.advance();
+                Ok(TypeNode::String(token))
+            }
+            TokenType::StrType => {
+                self.advance();
+                Ok(TypeNode::Str(token))
+            }
+            TokenType::CharType => {
+                self.advance();
+                Ok(TypeNode::Char(token))
+            }
             TokenType::Identifier => {
                 self.advance();
                 Ok(TypeNode::Named(token))
@@ -469,6 +481,18 @@ impl Parser {
                     }
                 }
             }
+            TokenType::StringType
+                if self.peek_safe().map(|t| t.token_type) == Some(TokenType::ColonColon) =>
+            {
+                let tok = self.current_token().clone();
+                self.advance();
+                self.advance();
+                let member = self.expect_type(&TokenType::Identifier)?;
+                ExpressionNode::StaticMember(StaticMemberExprNode {
+                    type_name: tok,
+                    member: member,
+                })
+            }
             TokenType::Identifier => {
                 let tok = self.current_token().clone();
                 self.advance();
@@ -511,6 +535,11 @@ impl Parser {
                 let tok = self.current_token().clone();
                 self.advance();
                 ExpressionNode::StringLiteral(tok)
+            }
+            TokenType::CharLiteral => {
+                let tok = self.current_token().clone();
+                self.advance();
+                ExpressionNode::CharLiteral(tok)
             }
             TokenType::True | TokenType::False => {
                 let tok = self.current_token().clone();
