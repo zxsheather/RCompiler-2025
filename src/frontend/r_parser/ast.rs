@@ -178,6 +178,7 @@ pub enum ExpressionNode {
     While(Box<WhileExprNode>),
     Member(MemberExprNode),
     Ref(RefExprNode),
+    Return(Box<ReturnExprNode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -249,4 +250,10 @@ pub struct MethodCallExprNode {
     pub object: Box<ExpressionNode>,
     pub method: Token,
     pub args: Vec<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReturnExprNode {
+    pub return_token: Token,
+    pub value: Option<ExpressionNode>,
 }

@@ -131,12 +131,14 @@ impl Globe {
 
 pub struct Analyzer {
     pub globe: Globe,
+    current_return_type: Option<RxType>,
 }
 
 impl Analyzer {
     pub fn new() -> Self {
         Self {
             globe: Globe::default(),
+            current_return_type: None,
         }
     }
 
@@ -535,8 +537,9 @@ impl Analyzer {
             .map(|t| self.type_from_node(t))
             .transpose()?
             .unwrap_or(RxType::Unit);
+        self.current_return_type = Some(ret_ty.clone());
         let blk_ty = self.analyse_block(&func.body)?;
-        if ret_ty != blk_ty {
+        if blk_ty != RxType::Never && ret_ty != blk_ty {
             return Err(SemanticError::FunctionReturnTypeMismatch {
                 name: func.name.lexeme.clone(),
                 expected: ret_ty,
@@ -550,18 +553,24 @@ impl Analyzer {
 
     pub fn analyse_block(&mut self, blk: &BlockNode) -> SemanticResult<RxType> {
         self.globe.push_scope();
-        for stmt in &blk.stats {
-            self.analyse_statement(stmt)?;
+        let mut ret = RxType::Unit;
+        for stmt in blk.stats.iter().take(blk.stats.len()) {
+            let ty = self.analyse_statement(stmt)?;
+            if let Some(t) = ty {
+                if t.is_never() {
+                    ret = RxType::Never;
+                    break;
+                }
+            }
         }
-        let ret = if let Some(expr) = &blk.final_expr {
-            self.analyse_expression(expr)?
-        } else {
-            RxType::Unit
-        };
+        if let Some(expr) = &blk.final_expr {
+            ret = self.analyse_expression(expr)?
+        }
         Ok(ret)
     }
 
-    pub fn analyse_statement(&mut self, stmt: &StatementNode) -> SemanticResult<()> {
+    // If the stat is expr stat, return the type of expr
+    pub fn analyse_statement(&mut self, stmt: &StatementNode) -> SemanticResult<Option<RxType>> {
         match stmt {
             StatementNode::Let(LetStatementNode {
                 let_token,
@@ -588,7 +597,7 @@ impl Analyzer {
                     mutable: *mutable,
                     token: identifier.clone(),
                 })?;
-                Ok(())
+                Ok(None)
             }
             StatementNode::Assign(AssignStatementNode { identifier, value }) => {
                 let symbol = match self.globe.lookup_var(&identifier.lexeme).cloned() {
@@ -619,11 +628,11 @@ impl Analyzer {
                         column: identifier.position.column,
                     });
                 }
-                Ok(())
+                Ok(None)
             }
             StatementNode::Expression(ExprStatementNode { expression }) => {
-                self.analyse_expression(expression)?;
-                Ok(())
+                let ty = self.analyse_expression(expression)?;
+                Ok(Some(ty))
             }
         }
     }
@@ -788,6 +797,42 @@ impl Analyzer {
                     }
                 }
                 Ok(RxType::Ref(Box::new(ty), r.mutable))
+            }
+            ExpressionNode::Return(ret) => {
+                if let Some(expected) = self.current_return_type.clone() {
+                    match (&ret.value, &expected) {
+                        (Some(val_expr), exp_ty) => {
+                            let vty = self.analyse_expression(val_expr)?;
+                            if vty != *exp_ty {
+                                return Err(SemanticError::FunctionReturnTypeMismatch {
+                                    name: "<anonymous>".to_string(),
+                                    expected: exp_ty.clone(),
+                                    found: vty,
+                                    line: ret.return_token.position.line,
+                                    column: ret.return_token.position.column,
+                                });
+                            }
+                        }
+                        (None, exp_ty) => {
+                            if *exp_ty != RxType::Unit {
+                                return Err(SemanticError::FunctionReturnTypeMismatch {
+                                    name: "<anonymous>".to_string(),
+                                    expected: exp_ty.clone(),
+                                    found: RxType::Unit,
+                                    line: ret.return_token.position.line,
+                                    column: ret.return_token.position.column,
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    return Err(SemanticError::Generic {
+                        msg: "return outside function".to_string(),
+                        line: ret.return_token.position.line,
+                        column: ret.return_token.position.column,
+                    });
+                }
+                Ok(RxType::Never)
             }
         }
     }
@@ -1051,15 +1096,15 @@ impl Analyzer {
             None => None,
         };
         if let Some(elty) = else_ty {
-            if elty != then_ty {
+            if let Some(unified) = RxType::unify(&then_ty, &elty) {
+                Ok(unified)
+            } else {
                 Err(SemanticError::BranchTypeMismatched {
                     then_ty,
                     else_ty: elty,
                     line,
                     column,
                 })
-            } else {
-                Ok(then_ty)
             }
         } else {
             Ok(then_ty)

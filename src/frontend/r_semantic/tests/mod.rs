@@ -760,3 +760,106 @@ fn if_then_else_assigns_ok() {
     "#;
     assert!(analyze_src(src).is_ok());
 }
+
+// ===== Return & never type tests =====
+
+#[test]
+fn return_simple_ok() {
+    let src = r#"fn f() -> i32 { return 1; }"#;
+    match analyze_src(src) {
+        Ok(_) => {}
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn return_early_in_if_branch_ok() {
+    // then branch returns early => else branch type determines whole if expression
+    let src = r#"
+        fn f(b: bool) -> i32 {
+            if b { return 1; } else { 2 }
+        }
+    "#;
+    match analyze_src(src) {
+        Ok(_) => {}
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn return_early_in_else_branch_ok() {
+    let src = r#"
+        fn f(b: bool) -> i32 {
+            if b { 2 } else { return 1; }
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn both_branches_return_ok() {
+    let src = r#"
+        fn f(b: bool) -> i32 {
+            if b { return 1; } else { return 2; }
+        }
+    "#; // function body diverges after if (both branches return) -> accepted
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn return_with_value_type_mismatch_function_decl_error() {
+    let src = r#"fn f() -> i32 { return true; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected i32, found bool"), "err: {err}");
+}
+
+#[test]
+fn tail_expression_unified_with_never_ok() {
+    let src = r#"
+        fn f(b: bool) -> i32 {
+            if b { return 1; } else { 3 }
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn nested_if_with_return_unification_ok() {
+    let src = r#"
+        fn f(a: bool, b: bool) -> i32 {
+            if a { if b { return 1; } else { return 2; } } else { 5 }
+        }
+    "#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn return_without_value_type_mismatch_error() {
+    let src = r#"fn f() -> i32 { return; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected i32, found ()"), "err: {err}");
+}
+
+#[test]
+fn return_with_value_in_unit_function_error() {
+    let src = r#"fn f() { return 1; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("expected (), found i32"), "err: {err}");
+}
+
+#[test]
+fn block_trailing_semicolon_discards_value_ok() {
+    // The inner block ends with an expression statement `1;` whose value is discarded, so block type is ()
+    let src = r#"fn f() { { 1; }; }"#; // outer function returns () implicitly
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn block_last_statement_diverging_propagates_never_ok() {
+    // Both branches return; last statement is if-expression whose type is Never, so block type is Never
+    let src = r#"fn f(b: bool) -> i32 { if b { return 1; } else { return 2; } }"#;
+    match analyze_src(src) {
+        Ok(_) => {}
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
