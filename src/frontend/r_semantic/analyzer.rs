@@ -150,6 +150,8 @@ impl Analyzer {
         }
     }
 
+    fn add_built_in_functions(&mut self) {}
+
     pub fn analyse_program(&mut self, nodes: &[AstNode]) -> SemanticResult<()> {
         for node in nodes {
             match node {
@@ -547,7 +549,7 @@ impl Analyzer {
             .unwrap_or(RxType::Unit);
         self.current_return_type = Some(ret_ty.clone());
         let blk_ty = self.analyse_block(&func.body)?;
-        if blk_ty != RxType::Never && ret_ty != blk_ty {
+        if RxType::unify(&ret_ty, &blk_ty).is_none() {
             return Err(SemanticError::FunctionReturnTypeMismatch {
                 name: func.name.lexeme.clone(),
                 expected: ret_ty,
@@ -587,16 +589,21 @@ impl Analyzer {
                 type_annotation,
                 value,
             }) => {
-                let expr_ty = self.analyse_expression(&value)?;
+                let mut expr_ty = self.analyse_expression(&value)?;
                 if let Some(ty) = type_annotation {
                     let decl_ty = self.type_from_node(&ty)?;
-                    if decl_ty != expr_ty {
-                        return Err(SemanticError::AssignTypeMismatched {
-                            expected: decl_ty,
-                            found: expr_ty,
-                            line: let_token.position.line,
-                            column: let_token.position.column,
-                        });
+                    match RxType::unify(&decl_ty, &expr_ty) {
+                        Some(unified) => {
+                            expr_ty = unified;
+                        }
+                        None => {
+                            return Err(SemanticError::AssignTypeMismatched {
+                                expected: decl_ty,
+                                found: expr_ty,
+                                line: let_token.position.line,
+                                column: let_token.position.column,
+                            });
+                        }
                     }
                 }
                 self.globe.declare_var(Symbol {
@@ -665,27 +672,32 @@ impl Analyzer {
                     Ok(RxType::USize)
                 } else if token.lexeme.contains("u32") {
                     Ok(RxType::U32)
-                } else {
+                } else if token.lexeme.contains("i32") {
                     Ok(RxType::I32)
+                } else {
+                    Ok(RxType::IntLiteral)
                 }
             }
             ExpressionNode::StringLiteral(_) => Ok(RxType::String),
             ExpressionNode::BoolLiteral(_) => Ok(RxType::Bool),
             ExpressionNode::Block(b) => Ok(self.analyse_block(b)?),
             ExpressionNode::ArrayLiteral(arr) => {
-                let elem_ty = if let Some(node) = arr.elements.first() {
+                let mut elem_ty = if let Some(node) = arr.elements.first() {
                     self.analyse_expression(node)?
                 } else {
                     RxType::Unit
                 };
                 for elem in arr.elements.iter() {
                     let tp = self.analyse_expression(elem)?;
-                    if tp != elem_ty {
-                        return Err(SemanticError::MixedTypedArray {
-                            type1: elem_ty,
-                            type2: tp,
-                        });
-                    }
+                    elem_ty = match RxType::unify(&tp, &elem_ty) {
+                        Some(unified) => unified,
+                        None => {
+                            return Err(SemanticError::MixedTypedArray {
+                                type1: tp,
+                                type2: elem_ty,
+                            });
+                        }
+                    };
                 }
                 Ok(RxType::Array(Box::new(elem_ty), Some(arr.elements.len())))
             }
@@ -814,7 +826,7 @@ impl Analyzer {
                     match (&ret.value, &expected) {
                         (Some(val_expr), exp_ty) => {
                             let vty = self.analyse_expression(val_expr)?;
-                            if vty != *exp_ty {
+                            if RxType::unify(&vty, exp_ty).is_none() {
                                 return Err(SemanticError::FunctionReturnTypeMismatch {
                                     name: "<anonymous>".to_string(),
                                     expected: exp_ty.clone(),
@@ -901,16 +913,18 @@ impl Analyzer {
                         line,
                         column,
                     })
-                } else if lt != rt {
-                    Err(SemanticError::MismatchedBinaryTypes {
-                        op: op_token.as_str().to_string(),
-                        left: lt,
-                        right: rt,
-                        line,
-                        column,
-                    })
                 } else {
-                    Ok(lt)
+                    if let Some(unified) = RxType::unify(&lt, &rt) {
+                        Ok(unified)
+                    } else {
+                        Err(SemanticError::MismatchedBinaryTypes {
+                            op: op_token.as_str().to_string(),
+                            left: lt,
+                            right: rt,
+                            line,
+                            column,
+                        })
+                    }
                 }
             }
 
@@ -923,7 +937,7 @@ impl Analyzer {
                         line,
                         column,
                     })
-                } else if lt != rt {
+                } else if RxType::unify(&lt, &rt).is_none() {
                     Err(SemanticError::MismatchedBinaryTypes {
                         op: op_token.as_str().to_string(),
                         left: lt,
@@ -968,15 +982,17 @@ impl Analyzer {
                         column,
                     });
                 }
-                if lt != rt {
-                    return Err(SemanticError::AssignTypeMismatched {
-                        expected: lt.clone(),
-                        found: rt,
+                if let Some(unified) = RxType::unify(&lt, &rt) {
+                    Ok(unified)
+                } else {
+                    Err(SemanticError::MismatchedBinaryTypes {
+                        op: op_token.as_str().to_string(),
+                        left: lt,
+                        right: rt,
                         line,
                         column,
-                    });
+                    })
                 }
-                Ok(lt)
             }
 
             Eq => {
@@ -987,15 +1003,17 @@ impl Analyzer {
                         column,
                     });
                 }
-                if lt != rt {
-                    return Err(SemanticError::AssignTypeMismatched {
-                        expected: lt.clone(),
-                        found: rt,
+                if let Some(unified) = RxType::unify(&lt, &rt) {
+                    Ok(unified)
+                } else {
+                    Err(SemanticError::MismatchedBinaryTypes {
+                        op: op_token.as_str().to_string(),
+                        left: lt,
+                        right: rt,
                         line,
                         column,
-                    });
+                    })
                 }
-                Ok(lt)
             }
             _ => Err(SemanticError::Generic {
                 msg: "Unsupported binary operator".to_string(),
@@ -1011,6 +1029,7 @@ impl Analyzer {
             arr_ty = *inner;
         }
         let idx_ty = self.analyse_expression(&i.index)?;
+        // TODO: Handle idx_ty later
         if !idx_ty.is_integer() {
             // Currently not handle position information
             return Err(SemanticError::InvalidIndexType {
@@ -1075,7 +1094,7 @@ impl Analyzer {
                     column,
                 });
             };
-            if found != *expected {
+            if RxType::unify(&found, expected).is_none() {
                 return Err(SemanticError::StructFieldTypeMismatch {
                     name: s.name.lexeme.clone(),
                     field: field.name.lexeme.clone(),
@@ -1179,12 +1198,15 @@ impl Analyzer {
         if let Some(vty) = break_value_ty {
             match &ctx.expected_type {
                 Some(exp) => {
-                    if *exp != vty {
+                    let new_tp = RxType::unify(&vty, exp);
+                    if new_tp.is_none() {
                         return Err(SemanticError::Generic {
                             msg: format!("break value type mismatch: expected {exp}, found {vty}"),
                             line: brk.break_token.position.line,
                             column: brk.break_token.position.column,
                         });
+                    } else {
+                        ctx.expected_type = new_tp;
                     }
                 }
                 None => {
@@ -1252,7 +1274,7 @@ impl Analyzer {
                 }
                 for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
                     let at = self.analyse_expression(arg)?;
-                    if *pt != at {
+                    if RxType::unify(pt, &at).is_none() {
                         return Err(SemanticError::ArgTypeMismatched {
                             callee: format!("{}::{}", st, method_name),
                             index: i,
@@ -1289,7 +1311,7 @@ impl Analyzer {
 
                 for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
                     let at = self.analyse_expression(arg)?;
-                    if *pt != at {
+                    if RxType::unify(pt, &at).is_none() {
                         return Err(SemanticError::ArgTypeMismatched {
                             callee: callee_name,
                             index: i,
@@ -1422,7 +1444,7 @@ impl Analyzer {
         }
         for (i, (pt, arg)) in sig.param_types.iter().zip(&mc.args).enumerate() {
             let at = self.analyse_expression(arg)?;
-            if *pt != at {
+            if RxType::unify(pt, &at).is_none() {
                 return Err(SemanticError::ArgTypeMismatched {
                     callee: format!("{}.{}", struct_name, method_name),
                     index: i + 1,
