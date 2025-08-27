@@ -1,6 +1,7 @@
 use crate::frontend::r_lexer::lexer::Lexer;
 use crate::frontend::r_parser::parser::Parser;
 use crate::frontend::r_semantic::analyzer::Analyzer;
+pub mod as_cast;
 pub mod built_in;
 pub mod string_char;
 

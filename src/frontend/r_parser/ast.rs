@@ -185,6 +185,7 @@ pub enum ExpressionNode {
     Return(Box<ReturnExprNode>),
     Break(Box<BreakExprNode>),
     Continue(Box<ContinueExprNode>),
+    As(Box<AsExprNode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -279,4 +280,11 @@ pub struct BreakExprNode {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ContinueExprNode {
     pub continue_token: Token,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AsExprNode {
+    pub expr: Box<ExpressionNode>,
+    pub as_token: Token,
+    pub type_name: TypeNode,
 }

@@ -3,11 +3,11 @@ use std::{collections::HashMap, usize};
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{
-        AssignStatementNode, AstNode, BinaryExprNode, BlockNode, BreakExprNode, CallExprNode,
-        ContinueExprNode, ElseBodyNode, ExprStatementNode, ExpressionNode, FunctionNode,
-        IfExprNode, ImplNode, ImplTraitBlockNode, IndexExprNode, LetStatementNode, LoopExprNode,
-        MemberExprNode, MethodCallExprNode, StatementNode, StructLiteralNode, TraitDeclNode,
-        TypeNode, UnaryExprNode, WhileExprNode,
+        AsExprNode, AssignStatementNode, AstNode, BinaryExprNode, BlockNode, BreakExprNode,
+        CallExprNode, ContinueExprNode, ElseBodyNode, ExprStatementNode, ExpressionNode,
+        FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode, IndexExprNode, LetStatementNode,
+        LoopExprNode, MemberExprNode, MethodCallExprNode, RefExprNode, ReturnExprNode,
+        StatementNode, StructLiteralNode, TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
@@ -681,7 +681,7 @@ impl Analyzer {
                 }
 
                 let value_ty = self.analyse_expression(value)?;
-                if value_ty != symbol.ty {
+                if RxType::unify(&symbol.ty, &value_ty).is_none() {
                     return Err(SemanticError::AssignTypeMismatched {
                         expected: symbol.ty,
                         found: value_ty,
@@ -781,129 +781,9 @@ impl Analyzer {
                 }
                 Ok(RxType::Unit)
             }
-            ExpressionNode::Ref(r) => {
-                let ty = self.analyse_expression(&r.operand)?;
-                if r.mutable {
-                    match &*r.operand {
-                        ExpressionNode::Identifier(tok) => {
-                            let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
-                                return Err(SemanticError::UndefinedIdentifier {
-                                    name: tok.lexeme.clone(),
-                                    line: tok.position.line,
-                                    column: tok.position.column,
-                                });
-                            };
-                            if !symbol.mutable {
-                                return Err(SemanticError::BorrowMutFromImmutable {
-                                    name: tok.lexeme.clone(),
-                                    line: tok.position.line,
-                                    column: tok.position.column,
-                                });
-                            }
-                        }
-                        ExpressionNode::Index(IndexExprNode { array, .. }) => {
-                            if let ExpressionNode::Identifier(tok) = &**array {
-                                let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
-                                    return Err(SemanticError::UndefinedIdentifier {
-                                        name: tok.lexeme.clone(),
-                                        line: tok.position.line,
-                                        column: tok.position.column,
-                                    });
-                                };
-                                let can_write = match &symbol.ty {
-                                    RxType::Ref(_, is_mut) => *is_mut,
-                                    _ => symbol.mutable,
-                                };
-                                if !can_write {
-                                    return Err(SemanticError::BorrowMutFromImmutable {
-                                        name: tok.lexeme.clone(),
-                                        line: tok.position.line,
-                                        column: tok.position.column,
-                                    });
-                                }
-                            } else {
-                                return Err(SemanticError::Generic {
-                                    msg: "Cannot take mutable reference of non-lvalue".to_string(),
-                                    line: 0,
-                                    column: 0,
-                                });
-                            }
-                        }
-                        ExpressionNode::Member(MemberExprNode { object, .. }) => {
-                            if let ExpressionNode::Identifier(tok) = &**object {
-                                let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
-                                    return Err(SemanticError::UndefinedIdentifier {
-                                        name: tok.lexeme.clone(),
-                                        line: tok.position.line,
-                                        column: tok.position.column,
-                                    });
-                                };
-                                let can_write = match &symbol.ty {
-                                    RxType::Ref(_, is_mut) => *is_mut,
-                                    _ => symbol.mutable,
-                                };
-                                if !can_write {
-                                    return Err(SemanticError::BorrowMutFromImmutable {
-                                        name: tok.lexeme.clone(),
-                                        line: tok.position.line,
-                                        column: tok.position.column,
-                                    });
-                                }
-                            } else {
-                                return Err(SemanticError::Generic {
-                                    msg: "Cannot take mutable reference of non-lvalue".to_string(),
-                                    line: 0,
-                                    column: 0,
-                                });
-                            }
-                        }
-                        _ => {
-                            return Err(SemanticError::Generic {
-                                msg: "Cannot take mutable reference of rvalue".to_string(),
-                                line: 0,
-                                column: 0,
-                            });
-                        }
-                    }
-                }
-                Ok(RxType::Ref(Box::new(ty), r.mutable))
-            }
-            ExpressionNode::Return(ret) => {
-                if let Some(expected) = self.current_return_type.clone() {
-                    match (&ret.value, &expected) {
-                        (Some(val_expr), exp_ty) => {
-                            let vty = self.analyse_expression(val_expr)?;
-                            if RxType::unify(&vty, exp_ty).is_none() {
-                                return Err(SemanticError::FunctionReturnTypeMismatch {
-                                    name: "<anonymous>".to_string(),
-                                    expected: exp_ty.clone(),
-                                    found: vty,
-                                    line: ret.return_token.position.line,
-                                    column: ret.return_token.position.column,
-                                });
-                            }
-                        }
-                        (None, exp_ty) => {
-                            if *exp_ty != RxType::Unit {
-                                return Err(SemanticError::FunctionReturnTypeMismatch {
-                                    name: "<anonymous>".to_string(),
-                                    expected: exp_ty.clone(),
-                                    found: RxType::Unit,
-                                    line: ret.return_token.position.line,
-                                    column: ret.return_token.position.column,
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    return Err(SemanticError::Generic {
-                        msg: "return outside function".to_string(),
-                        line: ret.return_token.position.line,
-                        column: ret.return_token.position.column,
-                    });
-                }
-                Ok(RxType::Never)
-            }
+            ExpressionNode::Ref(r) => Ok(self.analyse_ref(r)?),
+            ExpressionNode::Return(ret) => Ok(self.analyse_return(ret)?),
+            ExpressionNode::As(a) => Ok(self.analyse_as(a)?),
         }
     }
 
@@ -1124,6 +1004,131 @@ impl Analyzer {
         Ok(ty.clone())
     }
 
+    fn analyse_ref(&mut self, r: &RefExprNode) -> SemanticResult<RxType> {
+        let ty = self.analyse_expression(&r.operand)?;
+        if r.mutable {
+            match &*r.operand {
+                ExpressionNode::Identifier(tok) => {
+                    let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                        return Err(SemanticError::UndefinedIdentifier {
+                            name: tok.lexeme.clone(),
+                            line: tok.position.line,
+                            column: tok.position.column,
+                        });
+                    };
+                    if !symbol.mutable {
+                        return Err(SemanticError::BorrowMutFromImmutable {
+                            name: tok.lexeme.clone(),
+                            line: tok.position.line,
+                            column: tok.position.column,
+                        });
+                    }
+                }
+                ExpressionNode::Index(IndexExprNode { array, .. }) => {
+                    if let ExpressionNode::Identifier(tok) = &**array {
+                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                            return Err(SemanticError::UndefinedIdentifier {
+                                name: tok.lexeme.clone(),
+                                line: tok.position.line,
+                                column: tok.position.column,
+                            });
+                        };
+                        let can_write = match &symbol.ty {
+                            RxType::Ref(_, is_mut) => *is_mut,
+                            _ => symbol.mutable,
+                        };
+                        if !can_write {
+                            return Err(SemanticError::BorrowMutFromImmutable {
+                                name: tok.lexeme.clone(),
+                                line: tok.position.line,
+                                column: tok.position.column,
+                            });
+                        }
+                    } else {
+                        return Err(SemanticError::Generic {
+                            msg: "Cannot take mutable reference of non-lvalue".to_string(),
+                            line: 0,
+                            column: 0,
+                        });
+                    }
+                }
+                ExpressionNode::Member(MemberExprNode { object, .. }) => {
+                    if let ExpressionNode::Identifier(tok) = &**object {
+                        let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                            return Err(SemanticError::UndefinedIdentifier {
+                                name: tok.lexeme.clone(),
+                                line: tok.position.line,
+                                column: tok.position.column,
+                            });
+                        };
+                        let can_write = match &symbol.ty {
+                            RxType::Ref(_, is_mut) => *is_mut,
+                            _ => symbol.mutable,
+                        };
+                        if !can_write {
+                            return Err(SemanticError::BorrowMutFromImmutable {
+                                name: tok.lexeme.clone(),
+                                line: tok.position.line,
+                                column: tok.position.column,
+                            });
+                        }
+                    } else {
+                        return Err(SemanticError::Generic {
+                            msg: "Cannot take mutable reference of non-lvalue".to_string(),
+                            line: 0,
+                            column: 0,
+                        });
+                    }
+                }
+                _ => {
+                    return Err(SemanticError::Generic {
+                        msg: "Cannot take mutable reference of rvalue".to_string(),
+                        line: 0,
+                        column: 0,
+                    });
+                }
+            }
+        }
+        Ok(RxType::Ref(Box::new(ty), r.mutable))
+    }
+
+    fn analyse_return(&mut self, ret: &ReturnExprNode) -> SemanticResult<RxType> {
+        if let Some(expected) = self.current_return_type.clone() {
+            match (&ret.value, &expected) {
+                (Some(val_expr), exp_ty) => {
+                    let vty = self.analyse_expression(val_expr)?;
+                    if RxType::unify(&vty, exp_ty).is_none() {
+                        return Err(SemanticError::FunctionReturnTypeMismatch {
+                            name: "<anonymous>".to_string(),
+                            expected: exp_ty.clone(),
+                            found: vty,
+                            line: ret.return_token.position.line,
+                            column: ret.return_token.position.column,
+                        });
+                    }
+                }
+                (None, exp_ty) => {
+                    if *exp_ty != RxType::Unit {
+                        return Err(SemanticError::FunctionReturnTypeMismatch {
+                            name: "<anonymous>".to_string(),
+                            expected: exp_ty.clone(),
+                            found: RxType::Unit,
+                            line: ret.return_token.position.line,
+                            column: ret.return_token.position.column,
+                        });
+                    }
+                }
+            }
+        } else {
+            return Err(SemanticError::Generic {
+                msg: "return outside function".to_string(),
+                line: ret.return_token.position.line,
+                column: ret.return_token.position.column,
+            });
+        }
+        Ok(RxType::Never)
+    }
+
     fn analyse_struct_literal(&mut self, s: &StructLiteralNode) -> SemanticResult<RxType> {
         let name = s.name.lexeme.clone();
         let line = s.name.position.line;
@@ -1153,6 +1158,26 @@ impl Analyzer {
             }
         }
         Ok(RxType::Struct(s.name.lexeme.clone()))
+    }
+
+    fn analyse_as(&mut self, a: &AsExprNode) -> SemanticResult<RxType> {
+        let expr_ty = self.analyse_expression(&a.expr)?;
+        if !expr_ty.is_integer() && !matches!(expr_ty, RxType::Char | RxType::Bool) {
+            return Err(SemanticError::Generic {
+                msg: format!("Only integer, char, bool can be casted, found {}", expr_ty),
+                line: a.as_token.position.line,
+                column: a.as_token.position.column,
+            });
+        }
+        let target_ty = self.type_from_node(&a.type_name)?;
+        if !target_ty.is_integer() {
+            return Err(SemanticError::Generic {
+                msg: format!("Only integer can be casted to, found {}", target_ty),
+                line: a.as_token.position.line,
+                column: a.as_token.position.column,
+            });
+        }
+        Ok(target_ty)
     }
 
     fn analyse_if(&mut self, i: &IfExprNode) -> SemanticResult<RxType> {

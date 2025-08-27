@@ -582,6 +582,17 @@ impl Parser {
                 continue;
             }
 
+            if self.check_type(&TokenType::As) {
+                let as_token = self.expect_type(&TokenType::As)?;
+                let type_name = self.parse_type()?;
+                lhs = ExpressionNode::As(Box::new(AsExprNode {
+                    expr: Box::new(lhs),
+                    as_token,
+                    type_name,
+                }));
+                continue;
+            }
+
             if self.check_type(&TokenType::LBracket) {
                 self.advance();
                 let index = self.parse_expression()?;

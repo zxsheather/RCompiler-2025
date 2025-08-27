@@ -286,4 +286,12 @@ pub enum SemanticError {
         line: usize,
         column: usize,
     },
+
+    #[error("Type mismatch: expected {expected}, found {found}, at line {line}, column {column}")]
+    TypeMismatch {
+        expected: RxType,
+        found: RxType,
+        line: usize,
+        column: usize,
+    },
 }
