@@ -13,6 +13,9 @@ pub enum RxType {
     Array(Box<RxType>, Option<usize>),
     Struct(String),
     Ref(Box<RxType>, bool),
+
+    // bottom type: denotes divergence (e.g., return)
+    Never,
 }
 
 impl fmt::Display for RxType {
@@ -44,6 +47,7 @@ impl fmt::Display for RxType {
                     write!(f, "&{}", inner_type)
                 }
             }
+            RxType::Never => write!(f, "!"),
         }
     }
 }
@@ -54,5 +58,21 @@ impl RxType {
             self,
             RxType::I32 | RxType::U32 | RxType::ISize | RxType::USize
         )
+    }
+
+    pub fn is_never(&self) -> bool {
+        matches!(self, RxType::Never)
+    }
+
+    pub fn unify(a: &RxType, b: &RxType) -> Option<RxType> {
+        if a.is_never() {
+            Some(b.clone())
+        } else if b.is_never() {
+            Some(a.clone())
+        } else if a == b {
+            Some(a.clone())
+        } else {
+            None
+        }
     }
 }

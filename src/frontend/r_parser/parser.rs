@@ -273,6 +273,16 @@ impl Parser {
             }
         }
         self.expect_type(&TokenType::RBrace)?;
+        if final_expr.is_none() {
+            if let Some(last_stat) = statements.last() {
+                if let StatementNode::Expression(ExprStatementNode { expression }) = last_stat {
+                    if let ExpressionNode::If(_) | ExpressionNode::While(_) = expression {
+                        final_expr = Some(expression.clone());
+                        statements.pop();
+                    }
+                }
+            }
+        }
         Ok(BlockNode {
             stats: statements,
             final_expr,
@@ -308,6 +318,7 @@ impl Parser {
         // Currently, only 'let' and simple assignments are forced statements
         match self.current_token().token_type {
             TokenType::Let | TokenType::If | TokenType::While => true,
+            TokenType::Return => true,
             TokenType::Identifier => self
                 .peek_safe()
                 .map(|t| matches!(t.token_type, TokenType::Eq))
@@ -415,6 +426,7 @@ impl Parser {
             }
             TokenType::If => self.parse_if_expression()?,
             TokenType::While => self.parse_while_expression()?,
+            TokenType::Return => self.parse_return_expression()?,
             TokenType::LBrace => {
                 let block = self.parse_block()?;
                 ExpressionNode::Block(Box::new(block))
@@ -622,11 +634,11 @@ impl Parser {
     fn parse_struct_literal_fields(&mut self) -> ParseResult<Vec<StructLiteralFieldNode>> {
         self.expect_type(&TokenType::LBrace)?;
         let mut fields = Vec::new();
-        if self.check_type(&TokenType::RBrace) {
-            self.advance();
-            return Ok(fields);
-        }
         loop {
+            if self.check_type(&TokenType::RBrace) {
+                self.advance();
+                return Ok(fields);
+            }
             let name = self.expect_type(&TokenType::Identifier)?;
             let value = if self.check_type(&TokenType::Colon) {
                 self.advance();
@@ -797,6 +809,21 @@ impl Parser {
             type_annotation,
             mutable,
         })
+    }
+
+    fn parse_return_expression(&mut self) -> ParseResult<ExpressionNode> {
+        let return_token = self.expect_type(&TokenType::Return)?;
+        if self.check_type(&TokenType::Semicolon) {
+            return Ok(ExpressionNode::Return(Box::new(ReturnExprNode {
+                return_token,
+                value: None,
+            })));
+        }
+        let value = self.parse_expression()?;
+        Ok(ExpressionNode::Return(Box::new(ReturnExprNode {
+            return_token,
+            value: Some(value),
+        })))
     }
 
     fn parse_array_literal(&mut self) -> ParseResult<ArrayLiteralNode> {
