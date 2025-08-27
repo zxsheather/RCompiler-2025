@@ -6,6 +6,7 @@ pub enum RxType {
     U32,
     ISize,
     USize,
+    IntLiteral, // untyped integer literal (no suffix)
     Bool,
     String,
     Unit,
@@ -26,6 +27,7 @@ impl fmt::Display for RxType {
             RxType::ISize => write!(f, "isize"),
             RxType::USize => write!(f, "usize"),
             RxType::Bool => write!(f, "bool"),
+            RxType::IntLiteral => write!(f, "<int>"),
             RxType::String => write!(f, "string"),
             RxType::Unit => write!(f, "()"),
             RxType::Tuple(elems_tys) => {
@@ -56,6 +58,13 @@ impl RxType {
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
+            RxType::I32 | RxType::U32 | RxType::ISize | RxType::USize | RxType::IntLiteral
+        )
+    }
+
+    pub fn is_concrete_int(&self) -> bool {
+        matches!(
+            self,
             RxType::I32 | RxType::U32 | RxType::ISize | RxType::USize
         )
     }
@@ -66,13 +75,43 @@ impl RxType {
 
     pub fn unify(a: &RxType, b: &RxType) -> Option<RxType> {
         if a.is_never() {
-            Some(b.clone())
-        } else if b.is_never() {
-            Some(a.clone())
-        } else if a == b {
-            Some(a.clone())
-        } else {
-            None
+            return Some(b.clone());
+        }
+        if b.is_never() {
+            return Some(a.clone());
+        }
+        match (a, b) {
+            (RxType::IntLiteral, t) if t.is_concrete_int() => Some(t.clone()),
+            (t, RxType::IntLiteral) if t.is_concrete_int() => Some(t.clone()),
+            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a == size_b => {
+                let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
+                    return None;
+                };
+                Some(RxType::Array(Box::new(new_ty), *size_a))
+            }
+            (RxType::Ref(inner_a, mut_a), RxType::Ref(inner_b, mut_b)) if mut_a == mut_b => {
+                let Some(new_ty) = RxType::unify(&inner_a, &inner_b) else {
+                    return None;
+                };
+                Some(RxType::Ref(Box::new(new_ty), *mut_a))
+            }
+            (RxType::Tuple(elems_a), RxType::Tuple(elems_b)) if elems_a.len() == elems_b.len() => {
+                let mut new_elems = Vec::new();
+                for (elem_a, elem_b) in elems_a.iter().zip(elems_b.iter()) {
+                    let Some(new_ty) = RxType::unify(elem_a, elem_b) else {
+                        return None;
+                    };
+                    new_elems.push(new_ty);
+                }
+                Some(RxType::Tuple(new_elems))
+            }
+            _ => {
+                if a == b {
+                    Some(a.clone())
+                } else {
+                    None
+                }
+            }
         }
     }
 }

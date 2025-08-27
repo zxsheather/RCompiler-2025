@@ -1,5 +1,5 @@
 use crate::frontend::r_lexer::token::Token;
-use serde::Serialize;
+use serde::{Serialize, de};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AstNode {
@@ -176,9 +176,12 @@ pub enum ExpressionNode {
     Index(IndexExprNode),
     If(Box<IfExprNode>),
     While(Box<WhileExprNode>),
+    Loop(Box<LoopExprNode>),
     Member(MemberExprNode),
     Ref(RefExprNode),
     Return(Box<ReturnExprNode>),
+    Break(Box<BreakExprNode>),
+    Continue(Box<ContinueExprNode>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -256,4 +259,21 @@ pub struct MethodCallExprNode {
 pub struct ReturnExprNode {
     pub return_token: Token,
     pub value: Option<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LoopExprNode {
+    pub loop_token: Token,
+    pub body: BlockNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BreakExprNode {
+    pub break_token: Token,
+    pub value: Option<ExpressionNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContinueExprNode {
+    pub continue_token: Token,
 }

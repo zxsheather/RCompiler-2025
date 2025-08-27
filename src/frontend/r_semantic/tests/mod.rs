@@ -17,7 +17,10 @@ fn analyzer_ok_simple() {
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn main() { let mut x: i32 = 1; x = add(2, 3); }
     "#;
-    assert!(analyze_src(src).is_ok());
+    match analyze_src(src) {
+        Ok(()) => {}
+        Err(err) => panic!("Unexpected error: {err}"),
+    }
 }
 
 #[test]
@@ -89,9 +92,10 @@ fn tuple_types_flow() {
             let t: (i32, bool) = make();
         }
     "#;
-    // let err = analyze_src(src).unwrap_err();
-    // println!("{}", err);
-    assert!(analyze_src(src).is_ok());
+    match analyze_src(src) {
+        Ok(()) => {}
+        Err(err) => panic!("Unexpected error: {err}"),
+    }
 }
 
 #[test]
@@ -182,7 +186,12 @@ fn array_element_assignment_ok() {
     let src = r#"
         fn main() { let mut a: [i32; 3] = [1, 2, 3]; a[1] = 42; }
     "#;
-    assert!(analyze_src(src).is_ok());
+    match analyze_src(src) {
+        Ok(()) => {}
+        Err(err) => {
+            panic!("Unexpected error: {err}");
+        }
+    }
 }
 
 #[test]
@@ -192,7 +201,7 @@ fn array_element_assignment_type_error() {
     "#;
     let err = analyze_src(src).unwrap_err();
     // println!("{:?}", err);
-    assert!(err.contains("Type mismatch in assignment"), "err: {err}");
+    assert!(err.contains("type mismatch"), "err: {err}");
 }
 
 #[test]
@@ -221,7 +230,7 @@ fn struct_field_assignment_type_error() {
         fn main() { let mut p: Point = Point { x: 1, y: 2 }; p.x = true; }
     "#;
     let err = analyze_src(src).unwrap_err();
-    assert!(err.contains("Type mismatch in assignment"), "err: {err}");
+    assert!(err.contains("type mismatched"), "err: {err}");
 }
 
 #[test]
@@ -379,7 +388,12 @@ fn assign_through_mut_struct_ref_ok() {
             rp.x = 2;
         }
     "#;
-    assert!(analyze_src(src).is_ok());
+    match analyze_src(src) {
+        Ok(()) => {}
+        Err(err) => {
+            panic!("Unexpected error: {err}");
+        }
+    }
 }
 
 #[test]
@@ -715,7 +729,7 @@ fn compound_assign_var_immutable_error() {
 fn compound_assign_var_type_mismatch_error() {
     let src = r#"fn main() { let mut x: i32 = 1; x += true; }"#;
     let err = analyze_src(src).unwrap_err();
-    assert!(err.contains("Type mismatch"), "err: {err}");
+    assert!(err.contains("type mismatch"), "err: {err}");
 }
 
 #[test]
@@ -844,7 +858,7 @@ fn return_without_value_type_mismatch_error() {
 fn return_with_value_in_unit_function_error() {
     let src = r#"fn f() { return 1; }"#;
     let err = analyze_src(src).unwrap_err();
-    assert!(err.contains("expected (), found i32"), "err: {err}");
+    assert!(err.contains("expected (), found <int>"), "err: {err}");
 }
 
 #[test]
@@ -862,4 +876,53 @@ fn block_last_statement_diverging_propagates_never_ok() {
         Ok(_) => {}
         Err(e) => panic!("unexpected error: {e}"),
     }
+}
+
+// ===== Loop / Break / Continue tests =====
+
+#[test]
+fn while_loop_basic_ok() {
+    let src = r#"fn main() { let mut i: i32 = 0; while i < 3 { i = i + 1; } }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_break_value_ok() {
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break i; } i = i + 1; }; }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_unreachable_inconsistent_break_types_ok() {
+    // Second break is after a guaranteed break in earlier statement sequence -> unreachable, so no error.
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { break 1; break true; }; }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_inconsistent_break_types_error() {
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break true } else { break 1 } }; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("type mismatch"), "err: {err}");
+}
+
+#[test]
+fn while_break_with_value_error() {
+    let src = r#"fn main() { while true { break 1; } }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("break with value"), "err: {err}");
+}
+
+#[test]
+fn break_outside_loop_error() {
+    let src = r#"fn main() { break; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("break outside loop"), "err: {err}");
+}
+
+#[test]
+fn continue_outside_loop_error() {
+    let src = r#"fn main() { continue; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("continue outside loop"), "err: {err}");
 }

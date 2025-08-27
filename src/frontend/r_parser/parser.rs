@@ -276,7 +276,10 @@ impl Parser {
         if final_expr.is_none() {
             if let Some(last_stat) = statements.last() {
                 if let StatementNode::Expression(ExprStatementNode { expression }) = last_stat {
-                    if let ExpressionNode::If(_) | ExpressionNode::While(_) = expression {
+                    if let ExpressionNode::If(_)
+                    | ExpressionNode::While(_)
+                    | ExpressionNode::Loop(_) = expression
+                    {
                         final_expr = Some(expression.clone());
                         statements.pop();
                     }
@@ -317,7 +320,7 @@ impl Parser {
     fn is_stat_start(&self) -> bool {
         // Currently, only 'let' and simple assignments are forced statements
         match self.current_token().token_type {
-            TokenType::Let | TokenType::If | TokenType::While => true,
+            TokenType::Let | TokenType::If | TokenType::While | TokenType::Loop => true,
             TokenType::Return => true,
             TokenType::Identifier => self
                 .peek_safe()
@@ -384,6 +387,10 @@ impl Parser {
                 let expression = self.parse_while_expression()?;
                 Ok(StatementNode::Expression(ExprStatementNode { expression }))
             }
+            TokenType::Loop => {
+                let expression = self.parse_loop_expression()?;
+                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+            }
             _ => {
                 let expression = self.parse_expression()?;
                 self.expect_type(&TokenType::Semicolon)?;
@@ -426,6 +433,9 @@ impl Parser {
             }
             TokenType::If => self.parse_if_expression()?,
             TokenType::While => self.parse_while_expression()?,
+            TokenType::Loop => self.parse_loop_expression()?,
+            TokenType::Break => self.parse_break_expression()?,
+            TokenType::Continue => self.parse_continue_expression()?,
             TokenType::Return => self.parse_return_expression()?,
             TokenType::LBrace => {
                 let block = self.parse_block()?;
@@ -739,6 +749,15 @@ impl Parser {
         })))
     }
 
+    fn parse_loop_expression(&mut self) -> ParseResult<ExpressionNode> {
+        let loop_token = self.expect_type(&TokenType::Loop)?;
+        let body = self.parse_block()?;
+        Ok(ExpressionNode::Loop(Box::new(LoopExprNode {
+            loop_token,
+            body,
+        })))
+    }
+
     fn parse_param_list(&mut self) -> ParseResult<ParamListNode> {
         let mut params = Vec::new();
         self.expect_type(&TokenType::LParen)?;
@@ -809,6 +828,29 @@ impl Parser {
             type_annotation,
             mutable,
         })
+    }
+
+    fn parse_break_expression(&mut self) -> ParseResult<ExpressionNode> {
+        let break_token = self.expect_type(&TokenType::Break)?;
+        if self.check_type(&TokenType::Semicolon) {
+            self.advance();
+            return Ok(ExpressionNode::Break(Box::new(BreakExprNode {
+                break_token,
+                value: None,
+            })));
+        }
+        let value = self.parse_expression()?;
+        Ok(ExpressionNode::Break(Box::new(BreakExprNode {
+            break_token,
+            value: Some(value),
+        })))
+    }
+
+    fn parse_continue_expression(&mut self) -> ParseResult<ExpressionNode> {
+        let continue_token = self.expect_type(&TokenType::Continue)?;
+        Ok(ExpressionNode::Continue(Box::new(ContinueExprNode {
+            continue_token,
+        })))
     }
 
     fn parse_return_expression(&mut self) -> ParseResult<ExpressionNode> {
