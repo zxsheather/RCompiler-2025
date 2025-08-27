@@ -3,10 +3,11 @@ use std::{collections::HashMap, usize};
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{
-        AssignStatementNode, AstNode, BinaryExprNode, BlockNode, CallExprNode, ElseBodyNode,
-        ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
-        IndexExprNode, LetStatementNode, MemberExprNode, MethodCallExprNode, StatementNode,
-        StructLiteralNode, TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
+        AssignStatementNode, AstNode, BinaryExprNode, BlockNode, BreakExprNode, CallExprNode,
+        ContinueExprNode, ElseBodyNode, ExprStatementNode, ExpressionNode, FunctionNode,
+        IfExprNode, ImplNode, ImplTraitBlockNode, IndexExprNode, LetStatementNode, LoopExprNode,
+        MemberExprNode, MethodCallExprNode, StatementNode, StructLiteralNode, TraitDeclNode,
+        TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         error::{SemanticError, SemanticResult},
@@ -132,6 +133,12 @@ impl Globe {
 pub struct Analyzer {
     pub globe: Globe,
     current_return_type: Option<RxType>,
+    loop_stack: Vec<LoopContext>,
+}
+
+pub struct LoopContext {
+    pub expected_type: Option<RxType>,
+    pub allow_value: bool,
 }
 
 impl Analyzer {
@@ -139,6 +146,7 @@ impl Analyzer {
         Self {
             globe: Globe::default(),
             current_return_type: None,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -697,6 +705,9 @@ impl Analyzer {
             ExpressionNode::Index(i) => Ok(self.analyse_index(i)?),
             ExpressionNode::If(i) => Ok(self.analyse_if(i)?),
             ExpressionNode::While(w) => Ok(self.analyse_while(w)?),
+            ExpressionNode::Loop(l) => Ok(self.analyse_loop(l)?),
+            ExpressionNode::Break(brk) => Ok(self.analyse_break(brk)?),
+            ExpressionNode::Continue(ctn) => Ok(self.analyse_continue(ctn)?),
             ExpressionNode::Call(c) => Ok(self.analyse_call(c)?),
             ExpressionNode::MethodCall(mc) => Ok(self.analyse_method_call(mc)?),
             ExpressionNode::Member(m) => Ok(self.analyse_member(m)?),
@@ -1122,8 +1133,84 @@ impl Analyzer {
                 column,
             });
         }
+        self.loop_stack.push(LoopContext {
+            expected_type: Some(RxType::Unit),
+            allow_value: false,
+        });
         self.analyse_block(&w.body)?;
+        self.loop_stack.pop();
         Ok(RxType::Unit)
+    }
+
+    fn analyse_loop(&mut self, l: &LoopExprNode) -> SemanticResult<RxType> {
+        self.loop_stack.push(LoopContext {
+            expected_type: None,
+            allow_value: true,
+        });
+        let body_ty = self.analyse_block(&l.body)?;
+        let ctx = self.loop_stack.pop().unwrap();
+        if body_ty == RxType::Never && ctx.expected_type.is_none() {
+            return Ok(RxType::Never);
+        }
+        // If no break encountered and body doesn't diverge -> infinite loop UB, treat as Never
+        Ok(ctx.expected_type.unwrap_or(RxType::Never))
+    }
+
+    fn analyse_break(&mut self, brk: &BreakExprNode) -> SemanticResult<RxType> {
+        let break_value_ty = if let Some(val_expr) = &brk.value {
+            Some(self.analyse_expression(val_expr)?)
+        } else {
+            None
+        };
+        let Some(ctx) = self.loop_stack.last_mut() else {
+            return Err(SemanticError::Generic {
+                msg: "break outside loop".to_string(),
+                line: brk.break_token.position.line,
+                column: brk.break_token.position.column,
+            });
+        };
+        if !ctx.allow_value && brk.value.is_some() {
+            return Err(SemanticError::Generic {
+                msg: "break with value only allowed in 'loop'".to_string(),
+                line: brk.break_token.position.line,
+                column: brk.break_token.position.column,
+            });
+        }
+        if let Some(vty) = break_value_ty {
+            match &ctx.expected_type {
+                Some(exp) => {
+                    if *exp != vty {
+                        return Err(SemanticError::Generic {
+                            msg: format!("break value type mismatch: expected {exp}, found {vty}"),
+                            line: brk.break_token.position.line,
+                            column: brk.break_token.position.column,
+                        });
+                    }
+                }
+                None => {
+                    ctx.expected_type = Some(vty);
+                }
+            }
+        } else {
+            if ctx.allow_value {
+                if ctx.expected_type.is_none() {
+                    ctx.expected_type = Some(RxType::Unit);
+                }
+            }
+        }
+        Ok(RxType::Never)
+    }
+
+    fn analyse_continue(&mut self, ctn: &ContinueExprNode) -> SemanticResult<RxType> {
+        if self.loop_stack.is_empty() {
+            Err(SemanticError::Generic {
+                msg: "continue outside loop".to_string(),
+                line: ctn.continue_token.position.line,
+                column: ctn.continue_token.position.column,
+            })
+        } else {
+            Ok(RxType::Never)
+        }
     }
 
     fn analyse_call(&mut self, c: &CallExprNode) -> SemanticResult<RxType> {

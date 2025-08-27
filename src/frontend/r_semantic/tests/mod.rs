@@ -863,3 +863,52 @@ fn block_last_statement_diverging_propagates_never_ok() {
         Err(e) => panic!("unexpected error: {e}"),
     }
 }
+
+// ===== Loop / Break / Continue tests =====
+
+#[test]
+fn while_loop_basic_ok() {
+    let src = r#"fn main() { let mut i: i32 = 0; while i < 3 { i = i + 1; } }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_break_value_ok() {
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break i; } i = i + 1; }; }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_unreachable_inconsistent_break_types_ok() {
+    // Second break is after a guaranteed break in earlier statement sequence -> unreachable, so no error.
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { break 1; break true; }; }"#;
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn loop_with_inconsistent_break_types_error() {
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break true } else { break 1 } }; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("type mismatch"), "err: {err}");
+}
+
+#[test]
+fn while_break_with_value_error() {
+    let src = r#"fn main() { while true { break 1; } }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("break with value"), "err: {err}");
+}
+
+#[test]
+fn break_outside_loop_error() {
+    let src = r#"fn main() { break; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("break outside loop"), "err: {err}");
+}
+
+#[test]
+fn continue_outside_loop_error() {
+    let src = r#"fn main() { continue; }"#;
+    let err = analyze_src(src).unwrap_err();
+    assert!(err.contains("continue outside loop"), "err: {err}");
+}
