@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::fmt;
 
 /// Position information for tokens
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -24,7 +24,7 @@ impl Position {
 }
 
 /// Represents a token with its type, lexeme, and position
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct Token {
     pub token_type: TokenType,
     pub lexeme: String,
@@ -88,6 +88,9 @@ pub enum TokenType {
     ISize,
     USize,
     Bool,
+    StringType,
+    StrType,
+    CharType,
 
     // Reserved keywords for future use
     Abstract,
@@ -184,6 +187,12 @@ pub enum TokenType {
     None,
 }
 
+impl Default for TokenType {
+    fn default() -> Self {
+        TokenType::None
+    }
+}
+
 impl TokenType {
     /// Returns the string representation of the token type
     pub fn as_str(&self) -> &'static str {
@@ -244,8 +253,11 @@ impl TokenType {
             TokenType::ISize => "isize",
             TokenType::USize => "usize",
             TokenType::Bool => "bool",
+            TokenType::StringType => "String",
+            TokenType::StrType => "str",
             TokenType::StringLiteral => "string",
-            TokenType::CharLiteral => "char",
+            TokenType::CharLiteral => "char_literal",
+            TokenType::CharType => "char",
 
             TokenType::DotDotDot => "...",
             TokenType::DotDotEq => "..=",

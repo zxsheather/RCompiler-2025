@@ -186,6 +186,9 @@ impl Lexer {
             ("isize", TokenType::ISize),
             ("usize", TokenType::USize),
             ("bool", TokenType::Bool),
+            ("String", TokenType::StringType),
+            ("str", TokenType::StrType),
+            ("char", TokenType::CharType),
         ];
 
         for (keyword, token_type) in keywords {
