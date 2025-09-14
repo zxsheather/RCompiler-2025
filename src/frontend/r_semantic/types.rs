@@ -144,3 +144,16 @@ impl RxType {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RxValue {
+    I32(i32),
+    U32(u32),
+    ISize(isize),
+    USize(usize),
+    IntLiteral(i64),
+    Bool(bool),
+    String(String),
+    Char(char),
+    Str(&'static str),
+}

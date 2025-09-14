@@ -1,6 +1,7 @@
 use crate::frontend::r_lexer::lexer::Lexer;
 use crate::frontend::r_parser::parser::Parser;
 use crate::frontend::r_semantic::analyzer::Analyzer;
+pub mod as_cast;
 pub mod built_in;
 pub mod string_char;
 
@@ -698,7 +699,10 @@ fn array_repeat_size_parse_error() {
         fn main() { let flags = [0; true]; }
     "#; // size not integer literal -> parse error
     let err = analyze_src(src).unwrap_err();
-    assert!(err.contains("Expected IntegerLiteral"), "err: {err}");
+    assert!(
+        err.contains("Expected one of [IntegerLiteral, Identifier]"),
+        "err: {err}"
+    );
 }
 
 #[test]

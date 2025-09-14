@@ -31,7 +31,7 @@ pub fn get_built_in_funcs() -> Vec<(&'static str, FuncSig)> {
             "getString",
             FuncSig::new(vec![], RxType::String, SelfKind::None),
         ),
-        ("getInt", FuncSig::new(vec![], RxType::I32, SelfKind::None)),
+        ("readInt", FuncSig::new(vec![], RxType::I32, SelfKind::None)),
         (
             "exit",
             FuncSig::new(vec![RxType::I32], RxType::Unit, SelfKind::None),

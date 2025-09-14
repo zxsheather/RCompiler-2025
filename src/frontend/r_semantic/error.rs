@@ -286,4 +286,33 @@ pub enum SemanticError {
         line: usize,
         column: usize,
     },
+
+    #[error("Type mismatch: expected {expected}, found {found}, at line {line}, column {column}")]
+    TypeMismatch {
+        expected: RxType,
+        found: RxType,
+        line: usize,
+        column: usize,
+    },
+
+    #[error("Constant '{name}' already declared at line {line}, column {column}")]
+    ConstRedeclaration {
+        name: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error("Invalid constant expression: {expr}, at line {line}, column {column}")]
+    InvalidConstExpr {
+        expr: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error("Unknown constant '{name}' at line {line}, column {column}")]
+    UnknownConstant {
+        name: String,
+        line: usize,
+        column: usize,
+    },
 }
