@@ -110,8 +110,14 @@ pub struct StructFieldNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ArrayLiteralNode {
-    pub elements: Vec<ExpressionNode>,
+pub enum ArrayLiteralNode {
+    Elements {
+        elements: Vec<ExpressionNode>,
+    },
+    Repeated {
+        element: Box<ExpressionNode>,
+        size: Token,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -132,10 +138,20 @@ pub struct StructLiteralFieldNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConstItemNode {
+    pub const_token: Token,
+    pub name: Token,
+    pub type_annotation: TypeNode,
+    pub value: ExpressionNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum StatementNode {
     Let(LetStatementNode),
     Assign(AssignStatementNode),
     Expression(ExprStatementNode),
+    Const(ConstItemNode),
+    Func(FunctionNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

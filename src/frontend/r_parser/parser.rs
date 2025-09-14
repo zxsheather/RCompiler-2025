@@ -137,6 +137,21 @@ impl Parser {
         })
     }
 
+    fn parse_const_item(&mut self) -> ParseResult<ConstItemNode> {
+        let const_token = self.expect_type(&TokenType::Const)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        self.expect_type(&TokenType::Colon)?;
+        let type_annotation = self.parse_type()?;
+        self.expect_type(&TokenType::Eq)?;
+        let value = self.parse_expression()?;
+        Ok(ConstItemNode {
+            const_token,
+            name,
+            type_annotation,
+            value,
+        })
+    }
+
     fn parse_function(&mut self) -> ParseResult<FunctionNode> {
         let fn_token = self.expect_type(&TokenType::Fn)?;
         let name = self.expect_type(&TokenType::Identifier)?;
@@ -219,12 +234,16 @@ impl Parser {
                 // [T; N] or [T]
                 self.advance();
                 let elem_type = self.parse_type()?;
-                let size = if self.check_type(&TokenType::Semicolon) {
-                    self.advance();
-                    Some(self.expect_type(&TokenType::IntegerLiteral)?)
-                } else {
-                    None
-                };
+                let size =
+                    if self.check_type(&TokenType::Semicolon) {
+                        self.advance();
+                        Some(self.expect_multi_types(&[
+                            TokenType::IntegerLiteral,
+                            TokenType::Identifier,
+                        ])?)
+                    } else {
+                        None
+                    };
                 self.expect_type(&TokenType::RBracket)?;
                 Ok(TypeNode::Array {
                     elem_type: Box::new(elem_type),
@@ -334,6 +353,7 @@ impl Parser {
         match self.current_token().token_type {
             TokenType::Let | TokenType::If | TokenType::While | TokenType::Loop => true,
             TokenType::Return => true,
+            TokenType::Const | TokenType::Fn => true,
             TokenType::Identifier => self
                 .peek_safe()
                 .map(|t| matches!(t.token_type, TokenType::Eq))
@@ -402,6 +422,22 @@ impl Parser {
             TokenType::Loop => {
                 let expression = self.parse_loop_expression()?;
                 Ok(StatementNode::Expression(ExprStatementNode { expression }))
+            }
+            TokenType::Return => {
+                let expression = self.parse_return_expression()?;
+                if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                }
+                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+            }
+            TokenType::Const => {
+                let const_item = self.parse_const_item()?;
+                self.expect_type(&TokenType::Semicolon)?;
+                Ok(StatementNode::Const(const_item))
+            }
+            TokenType::Fn => {
+                let func = self.parse_function()?;
+                Ok(StatementNode::Func(func))
             }
             _ => {
                 let expression = self.parse_expression()?;
@@ -913,30 +949,19 @@ impl Parser {
         let mut elements = Vec::new();
         if self.check_type(&TokenType::RBracket) {
             self.advance();
-            return Ok(ArrayLiteralNode { elements });
+            return Ok(ArrayLiteralNode::Elements { elements });
         }
         // Lookahead for repeat form: <expr> ; <IntegerLiteral> ]
         let first_expr = self.parse_expression()?;
         if self.check_type(&TokenType::Semicolon) {
             self.advance();
-            let size_tok = self.expect_type(&TokenType::IntegerLiteral)?;
+            let size_tok =
+                self.expect_multi_types(&[TokenType::IntegerLiteral, TokenType::Identifier])?;
             self.expect_type(&TokenType::RBracket)?;
-            if let Ok(n) = size_tok.lexeme.parse::<usize>() {
-                elements = Vec::with_capacity(n);
-                for _ in 0..n {
-                    elements.push(first_expr.clone());
-                }
-                return Ok(ArrayLiteralNode { elements });
-            } else {
-                return Err(ParseError::Generic {
-                    message: format!(
-                        "Invalid array repeat size '{}': not a usize",
-                        size_tok.lexeme
-                    ),
-                    line: size_tok.position.line,
-                    column: size_tok.position.column,
-                });
-            }
+            return Ok(ArrayLiteralNode::Repeated {
+                element: Box::new(first_expr),
+                size: size_tok,
+            });
         } else {
             elements.push(first_expr);
             while self.check_type(&TokenType::Comma) {
@@ -949,7 +974,7 @@ impl Parser {
             }
             self.expect_type(&TokenType::RBracket)?;
         }
-        Ok(ArrayLiteralNode { elements })
+        Ok(ArrayLiteralNode::Elements { elements })
     }
 
     fn is_end(&self) -> bool {
@@ -998,5 +1023,24 @@ impl Parser {
                 column: token.position.column,
             })
         }
+    }
+
+    fn expect_multi_types(&mut self, token_types: &[TokenType]) -> ParseResult<Token> {
+        for tt in token_types {
+            if self.check_type(tt) {
+                let token = self.current_token().clone();
+                self.advance();
+                return Ok(token);
+            }
+        }
+        let token = self.current_token();
+        Err(ParseError::Generic {
+            message: format!(
+                "Expected one of {:?}, found {:?}",
+                token_types, token.token_type
+            ),
+            line: token.position.line,
+            column: token.position.column,
+        })
     }
 }

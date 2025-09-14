@@ -66,3 +66,31 @@ fn cast_string_to_i32_err() {
         "err: {err}"
     );
 }
+
+// Const tests
+#[test]
+fn const_simple_add() {
+    let src = "fn main(){ const A: i32 = 1 + 2; }";
+    match analyze_src(src) {
+        Ok(()) => {}
+        Err(err) => panic!("Unexpected error: {err}"),
+    }
+}
+
+#[test]
+fn const_mixed_int_literal_coercion() {
+    let src = "fn main(){ const A: i32 = 1 + 2i32 + 3; }";
+    assert!(analyze_src(src).is_ok());
+}
+
+#[test]
+fn const_div_by_zero_err() {
+    let src = "fn main(){ const A: i32 = 1 / 0; }";
+    assert!(analyze_src(src).is_err());
+}
+
+#[test]
+fn const_type_mismatch_err() {
+    let src = "fn main(){ const A: bool = 1 + 2; }";
+    assert!(analyze_src(src).is_err());
+}
