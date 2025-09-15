@@ -20,7 +20,7 @@ fn const_basic_ok() {
 
 #[test]
 fn const_use_in_array_ok() {
-    let src = r#"fn main() { const x: usize = 1; let mut arr: [i32; 3] = [0, 0, 0]; arr[x] = 1; const idx: usize = 2; arr[idx] = arr[idx] + x; }"#;
+    let src = r#"fn main() { const x: usize = 1; let mut arr: [i32; 3] = [0, 0, 0]; arr[x] = 1; const idx: usize = 2; arr[idx] = arr[idx] + x as i32; }"#;
     match analyze_src(src) {
         Ok(_) => {}
         Err(e) => panic!("unexpected error: {e}"),
@@ -29,7 +29,7 @@ fn const_use_in_array_ok() {
 
 #[test]
 fn const_expr_ok() {
-    let src = r#"fn main() { const a: i32 = 2; const b: i32 = a + 3; const c: usize = 5; let mut arr: [i32; b] = [0; b]; arr[c - 2] = 10; }"#;
+    let src = r#"fn main() { const a: i32 = 2; const b: i32 = a + 3; const c: usize = 5; let mut arr: [i32; c] = [0; c]; arr[c - 2] = 10; }"#;
     match analyze_src(src) {
         Ok(_) => {}
         Err(e) => panic!("unexpected error: {e}"),
