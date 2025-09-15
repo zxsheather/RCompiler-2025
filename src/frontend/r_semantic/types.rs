@@ -17,6 +17,7 @@ pub enum RxType {
     Tuple(Vec<RxType>),
     Array(Box<RxType>, Option<usize>),
     Struct(String),
+    // Enum(String),
     Ref(Box<RxType>, bool),
 
     // bottom type: denotes divergence (e.g., return)
@@ -51,6 +52,7 @@ impl fmt::Display for RxType {
                 }
             }
             RxType::Struct(s) => write!(f, "{s}"),
+            // RxType::Enum(e) => write!(f, "{e}"),
             RxType::Ref(inner_type, mutable) => {
                 if *mutable {
                     write!(f, "&mut {}", inner_type)

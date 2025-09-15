@@ -44,6 +44,7 @@ impl Parser {
             TokenType::Trait => Ok(AstNode::Trait(self.parse_trait_decl()?)),
             TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
+            TokenType::Enum => Ok(AstNode::Enum(self.parse_enum_decl()?)),
             TokenType::Impl => {
                 if let Some(tok) = self.peek_n_safe(2) {
                     if matches!(tok.token_type, TokenType::For) {
@@ -134,6 +135,30 @@ impl Parser {
             for_token,
             type_name,
             methods,
+        })
+    }
+
+    fn parse_enum_decl(&mut self) -> ParseResult<EnumDeclNode> {
+        let enum_token = self.expect_type(&TokenType::Enum)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        let mut variants = Vec::new();
+        self.expect_type(&TokenType::LBrace)?;
+        loop {
+            if self.check_type(&TokenType::RBrace) {
+                break;
+            }
+            let variant = self.expect_type(&TokenType::Identifier)?;
+            variants.push(EnumVariantNode { name: variant });
+            if !self.check_type(&TokenType::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(EnumDeclNode {
+            enum_token,
+            name,
+            variants,
         })
     }
 
@@ -698,11 +723,15 @@ impl Parser {
             | TokenType::SREq => Some((10, 9)),
             TokenType::OrOr => Some((30, 31)),
             TokenType::AndAnd => Some((40, 41)),
-            TokenType::Or => Some((50, 51)),
-            TokenType::Xor => Some((60, 61)),
-            TokenType::And => Some((70, 71)),
-            TokenType::EqEq | TokenType::NEq => Some((80, 81)),
-            TokenType::Lt | TokenType::LEq | TokenType::Gt | TokenType::GEq => Some((90, 91)),
+            TokenType::Lt
+            | TokenType::LEq
+            | TokenType::Gt
+            | TokenType::GEq
+            | TokenType::EqEq
+            | TokenType::NEq => Some((60, 61)),
+            TokenType::Or => Some((70, 71)),
+            TokenType::Xor => Some((80, 81)),
+            TokenType::And => Some((90, 91)),
             TokenType::SL | TokenType::SR => Some((100, 101)),
             TokenType::Plus | TokenType::Minus => Some((110, 111)),
             TokenType::Mul | TokenType::Div | TokenType::Percent => Some((120, 121)),

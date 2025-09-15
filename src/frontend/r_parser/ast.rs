@@ -7,6 +7,7 @@ pub enum AstNode {
     Statement(StatementNode),
     Expression(ExpressionNode),
     Struct(StructDeclNode),
+    Enum(EnumDeclNode),
     Impl(ImplNode),
     Trait(TraitDeclNode),
     ImplTrait(ImplTraitBlockNode),
@@ -107,6 +108,18 @@ pub struct ImplTraitBlockNode {
 pub struct StructFieldNode {
     pub name: Token,
     pub type_annotation: TypeNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EnumDeclNode {
+    pub enum_token: Token,
+    pub name: Token,
+    pub variants: Vec<EnumVariantNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EnumVariantNode {
+    pub name: Token,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
