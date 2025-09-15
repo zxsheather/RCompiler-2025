@@ -970,7 +970,21 @@ impl Analyzer {
                 }
             }
 
-            EqEq | NEq | Lt | LEq | Gt | GEq => {
+            EqEq | NEq => {
+                if let Some(_) = RxType::unify(&lt, &rt) {
+                    Ok(RxType::Bool)
+                } else {
+                    Err(SemanticError::MismatchedBinaryTypes {
+                        op: op_token.as_str().to_string(),
+                        left: lt,
+                        right: rt,
+                        line,
+                        column,
+                    })
+                }
+            }
+
+            Lt | LEq | Gt | GEq => {
                 if !lt.is_integer() {
                     Err(SemanticError::ArityMismatch {
                         operator: op_token.as_str().to_string(),
@@ -1257,7 +1271,7 @@ impl Analyzer {
             match (&ret.value, &expected) {
                 (Some(val_expr), exp_ty) => {
                     let vty = self.analyse_expression(val_expr)?;
-                    if RxType::unify(&vty, exp_ty).is_none() {
+                    if RxType::unify(exp_ty, &vty).is_none() {
                         return Err(SemanticError::FunctionReturnTypeMismatch {
                             name: "<anonymous>".to_string(),
                             expected: exp_ty.clone(),
@@ -1268,7 +1282,7 @@ impl Analyzer {
                     }
                 }
                 (None, exp_ty) => {
-                    if *exp_ty != RxType::Unit {
+                    if RxType::unify(&expected, &RxType::Unit).is_none() {
                         return Err(SemanticError::FunctionReturnTypeMismatch {
                             name: "<anonymous>".to_string(),
                             expected: exp_ty.clone(),
