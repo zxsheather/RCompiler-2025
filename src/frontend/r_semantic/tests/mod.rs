@@ -1,8 +1,10 @@
 use crate::frontend::r_lexer::lexer::Lexer;
 use crate::frontend::r_parser::parser::Parser;
 use crate::frontend::r_semantic::analyzer::Analyzer;
+pub mod advance;
 pub mod as_cast;
 pub mod built_in;
+pub mod consts;
 pub mod string_char;
 
 fn analyze_src(src: &str) -> Result<(), String> {
@@ -699,10 +701,7 @@ fn array_repeat_size_parse_error() {
         fn main() { let flags = [0; true]; }
     "#; // size not integer literal -> parse error
     let err = analyze_src(src).unwrap_err();
-    assert!(
-        err.contains("Expected one of [IntegerLiteral, Identifier]"),
-        "err: {err}"
-    );
+    assert!(err.contains("Cannot convert"), "err: {err}");
 }
 
 #[test]
@@ -931,4 +930,22 @@ fn continue_outside_loop_error() {
     let src = r#"fn main() { continue; }"#;
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("continue outside loop"), "err: {err}");
+}
+
+#[test]
+fn deref_semantic_ok() {
+    let src = r#"
+            fn main() { let mut x: i32 = 10; let r: &i32 = &x; let y: i32 = *r; }
+        "#;
+    let result = analyze_src(src);
+    assert!(result.is_ok(), "deref of &i32 should yield i32");
+}
+
+#[test]
+fn deref_non_ref_error() {
+    let src = r#"
+            fn main() { let x: i32 = 5; let y = *x; }
+        "#;
+    let result = analyze_src(src);
+    assert!(result.is_err(), "cannot deref non-reference");
 }

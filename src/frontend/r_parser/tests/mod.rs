@@ -488,3 +488,14 @@ fn ref_type_parse_in_fn_params() {
         _ => panic!("expected function"),
     }
 }
+
+#[test]
+fn deref_expression_parses() {
+    let expr = parse_expr("*x");
+    match expr {
+        ExpressionNode::Deref(DerefExprNode { operand, .. }) => {
+            assert!(matches!(*operand, ExpressionNode::Identifier(_)));
+        }
+        _ => panic!("expected deref expression"),
+    }
+}

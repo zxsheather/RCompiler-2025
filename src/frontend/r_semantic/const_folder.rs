@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode, UnaryExprNode},
@@ -13,6 +15,7 @@ impl ConstFolder {
     pub fn calc_expr(
         expr: &ExpressionNode,
         report_tok: &Token,
+        consts: &HashMap<String, (RxType, RxValue)>,
     ) -> SemanticResult<(RxType, RxValue)> {
         match expr {
             ExpressionNode::IntegerLiteral(token) => Self::parse_int_literal(token),
@@ -35,8 +38,19 @@ impl ConstFolder {
                     .unwrap_or('\0');
                 Ok((RxType::Char, RxValue::Char(ch)))
             }
+            ExpressionNode::Identifier(token) => {
+                if let Some(val) = consts.get(&token.lexeme) {
+                    Ok(val.clone())
+                } else {
+                    Err(SemanticError::Generic {
+                        msg: format!("Undefined constant {}", token.lexeme),
+                        line: token.position.line,
+                        column: token.position.column,
+                    })
+                }
+            }
             ExpressionNode::Unary(UnaryExprNode { operator, operand }) => {
-                let (ty, val) = Self::calc_expr(operand, report_tok)?;
+                let (ty, val) = Self::calc_expr(operand, report_tok, consts)?;
                 match operator.token_type {
                     TokenType::Minus => match (ty, val) {
                         (RxType::I32, RxValue::I32(v)) => Ok((RxType::I32, RxValue::I32(-v))),
@@ -82,8 +96,8 @@ impl ConstFolder {
                 operator,
                 right_operand,
             }) => {
-                let (lty, lval) = Self::calc_expr(left_operand, report_tok)?;
-                let (rty, rval) = Self::calc_expr(right_operand, report_tok)?;
+                let (lty, lval) = Self::calc_expr(left_operand, report_tok, consts)?;
+                let (rty, rval) = Self::calc_expr(right_operand, report_tok, consts)?;
                 Self::eval_binary(lty, lval, rty, rval, operator, report_tok)
             }
             other => Err(SemanticError::InvalidConstExpr {

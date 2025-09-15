@@ -27,7 +27,7 @@ pub enum TypeNode {
     Named(Token),
     Array {
         elem_type: Box<TypeNode>,
-        size: Option<Token>,
+        size: Option<Box<ExpressionNode>>,
     },
     Ref {
         inner_type: Box<TypeNode>,
@@ -116,7 +116,7 @@ pub enum ArrayLiteralNode {
     },
     Repeated {
         element: Box<ExpressionNode>,
-        size: Token,
+        size: Box<ExpressionNode>,
     },
 }
 
@@ -182,6 +182,7 @@ pub enum ExpressionNode {
     StringLiteral(Token),
     BoolLiteral(Token),
     CharLiteral(Token),
+    Underscore(Token),
     Block(Box<BlockNode>),
     TupleLiteral(TupleLiteralNode),
     ArrayLiteral(ArrayLiteralNode),
@@ -198,6 +199,7 @@ pub enum ExpressionNode {
     Loop(Box<LoopExprNode>),
     Member(MemberExprNode),
     Ref(RefExprNode),
+    Deref(DerefExprNode),
     Return(Box<ReturnExprNode>),
     Break(Box<BreakExprNode>),
     Continue(Box<ContinueExprNode>),
@@ -303,4 +305,10 @@ pub struct AsExprNode {
     pub expr: Box<ExpressionNode>,
     pub as_token: Token,
     pub type_name: TypeNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DerefExprNode {
+    pub star_token: Token,
+    pub operand: Box<ExpressionNode>,
 }

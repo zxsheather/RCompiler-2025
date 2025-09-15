@@ -315,4 +315,10 @@ pub enum SemanticError {
         line: usize,
         column: usize,
     },
+
+    #[error("Internal error: {message}")]
+    InternalError { message: String },
+
+    #[error("Invalid main function signature at line {line}, column {column}")]
+    MainFunctionSignatureInvalid { line: usize, column: usize },
 }

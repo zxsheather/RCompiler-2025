@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::frontend::r_semantic::error::{SemanticError, SemanticResult};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RxType {
     I32,
@@ -19,6 +21,9 @@ pub enum RxType {
 
     // bottom type: denotes divergence (e.g., return)
     Never,
+
+    // special type for main function
+    MainReturn,
 }
 
 impl fmt::Display for RxType {
@@ -54,6 +59,7 @@ impl fmt::Display for RxType {
                 }
             }
             RxType::Never => write!(f, "!"),
+            RxType::MainReturn => write!(f, "<main return>"),
         }
     }
 }
@@ -85,6 +91,9 @@ impl RxType {
             return Some(a.clone());
         }
         match (a, b) {
+            // We allow main to return () implicitly, but not vice versa
+            (RxType::MainReturn, RxType::Unit) => Some(RxType::MainReturn),
+
             (RxType::IntLiteral, t) if t.is_concrete_int() => Some(t.clone()),
             (t, RxType::IntLiteral) if t.is_concrete_int() => Some(t.clone()),
             (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a == size_b => {
@@ -140,6 +149,7 @@ impl RxType {
             RxType::Str => "str".to_string(),
             RxType::Array(_, _) => "Array".to_string(),
             RxType::Ref(inner, _) => inner.method_key(),
+            RxType::IntLiteral => "u32".to_string(),
             _ => "".to_string(),
         }
     }
@@ -156,4 +166,30 @@ pub enum RxValue {
     String(String),
     Char(char),
     Str(&'static str),
+}
+
+impl RxValue {
+    pub fn get_type(&self) -> RxType {
+        match self {
+            RxValue::I32(_) => RxType::I32,
+            RxValue::U32(_) => RxType::U32,
+            RxValue::ISize(_) => RxType::ISize,
+            RxValue::USize(_) => RxType::USize,
+            RxValue::IntLiteral(_) => RxType::IntLiteral,
+            RxValue::Bool(_) => RxType::Bool,
+            RxValue::String(_) => RxType::String,
+            RxValue::Char(_) => RxType::Char,
+            RxValue::Str(_) => RxType::Str,
+        }
+    }
+
+    pub fn as_usize(&self) -> SemanticResult<usize> {
+        match self {
+            RxValue::USize(v) => Ok(*v),
+            RxValue::IntLiteral(v) if *v >= 0 => Ok(*v as usize),
+            _ => Err(SemanticError::InternalError {
+                message: format!("Cannot convert {:?} to usize", self),
+            }),
+        }
+    }
 }
