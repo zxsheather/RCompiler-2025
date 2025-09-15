@@ -234,16 +234,12 @@ impl Parser {
                 // [T; N] or [T]
                 self.advance();
                 let elem_type = self.parse_type()?;
-                let size =
-                    if self.check_type(&TokenType::Semicolon) {
-                        self.advance();
-                        Some(self.expect_multi_types(&[
-                            TokenType::IntegerLiteral,
-                            TokenType::Identifier,
-                        ])?)
-                    } else {
-                        None
-                    };
+                let size = if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                    Some(Box::new(self.parse_expression()?))
+                } else {
+                    None
+                };
                 self.expect_type(&TokenType::RBracket)?;
                 Ok(TypeNode::Array {
                     elem_type: Box::new(elem_type),
@@ -370,7 +366,8 @@ impl Parser {
                 if mutable {
                     self.advance();
                 }
-                let identifier = self.expect_type(&TokenType::Identifier)?;
+                let identifier =
+                    self.expect_multi_types(&[TokenType::Identifier, TokenType::Underscore])?;
 
                 let type_annotation = if self.check_type(&TokenType::Colon) {
                     self.advance();
@@ -479,6 +476,16 @@ impl Parser {
                     operand: Box::new(rhs),
                 })
             }
+            TokenType::Mul => {
+                let star = self.current_token().clone();
+                let r_bp = 135;
+                self.advance();
+                let rhs = self.parse_expr_bp(r_bp)?;
+                ExpressionNode::Deref(DerefExprNode {
+                    star_token: star,
+                    operand: Box::new(rhs),
+                })
+            }
             TokenType::If => self.parse_if_expression()?,
             TokenType::While => self.parse_while_expression()?,
             TokenType::Loop => self.parse_loop_expression()?,
@@ -576,6 +583,11 @@ impl Parser {
                 let tok = self.current_token().clone();
                 self.advance();
                 ExpressionNode::CharLiteral(tok)
+            }
+            TokenType::Underscore => {
+                let tok = self.current_token().clone();
+                self.advance();
+                ExpressionNode::Underscore(tok)
             }
             TokenType::True | TokenType::False => {
                 let tok = self.current_token().clone();
@@ -700,11 +712,15 @@ impl Parser {
     fn parse_argument_list(&mut self) -> ParseResult<Vec<ExpressionNode>> {
         let mut args = Vec::new();
         self.expect_type(&TokenType::LParen)?;
-        if self.check_type(&TokenType::RParen) {
-            self.advance();
-            return Ok(args);
-        }
+        // if self.check_type(&TokenType::RParen) {
+        //     self.advance();
+        //     return Ok(args);
+        // }
         loop {
+            if self.check_type(&TokenType::RParen) {
+                self.advance();
+                return Ok(args);
+            }
             let expr = self.parse_expression()?;
             args.push(expr);
             if self.check_type(&TokenType::Comma) {
@@ -955,12 +971,11 @@ impl Parser {
         let first_expr = self.parse_expression()?;
         if self.check_type(&TokenType::Semicolon) {
             self.advance();
-            let size_tok =
-                self.expect_multi_types(&[TokenType::IntegerLiteral, TokenType::Identifier])?;
+            let size = self.parse_expression()?;
             self.expect_type(&TokenType::RBracket)?;
             return Ok(ArrayLiteralNode::Repeated {
                 element: Box::new(first_expr),
-                size: size_tok,
+                size: Box::new(size),
             });
         } else {
             elements.push(first_expr);

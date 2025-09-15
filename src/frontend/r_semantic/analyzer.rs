@@ -4,7 +4,7 @@ use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{
         ArrayLiteralNode, AsExprNode, AssignStatementNode, AstNode, BinaryExprNode, BlockNode,
-        BreakExprNode, CallExprNode, ConstItemNode, ContinueExprNode, ElseBodyNode,
+        BreakExprNode, CallExprNode, ConstItemNode, ContinueExprNode, DerefExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
         IndexExprNode, LetStatementNode, LoopExprNode, MemberExprNode, MethodCallExprNode,
         RefExprNode, ReturnExprNode, StatementNode, StructLiteralNode, TraitDeclNode, TypeNode,
@@ -80,7 +80,7 @@ pub struct Globe {
     static_methods: HashMap<(String, String), FuncSig>, // no self
     traits: HashMap<String, HashMap<String, FuncSig>>, // trait -> method -> sig
     impl_traits: HashMap<String, Vec<String>>,   // struct -> traits
-    const_items: HashMap<String, RxValue>,
+    const_items: HashMap<String, (RxType, RxValue)>, // name -> (type, value)
 }
 
 impl Globe {
@@ -105,7 +105,7 @@ impl Globe {
         }
     }
 
-    fn declare_const(&mut self, name: &Token, val: &RxValue) -> SemanticResult<()> {
+    fn declare_const(&mut self, name: &Token, ty: &RxType, val: &RxValue) -> SemanticResult<()> {
         if self.const_items.contains_key(&name.lexeme) {
             return Err(SemanticError::ConstRedeclaration {
                 name: name.lexeme.clone(),
@@ -113,7 +113,8 @@ impl Globe {
                 column: name.position.column,
             });
         }
-        self.const_items.insert(name.lexeme.clone(), val.clone());
+        self.const_items
+            .insert(name.lexeme.clone(), (ty.clone(), val.clone()));
         Ok(())
     }
 
@@ -126,7 +127,7 @@ impl Globe {
         None
     }
 
-    fn lookup_const(&self, name: &str) -> Option<&RxValue> {
+    fn lookup_const(&self, name: &str) -> Option<&(RxType, RxValue)> {
         self.const_items.get(name)
     }
 
@@ -154,6 +155,16 @@ impl Globe {
             },
         );
         Ok(())
+    }
+
+    fn get_var_or_const_type(&self, name: &str) -> Option<RxType> {
+        if let Some(var) = self.lookup_var(name) {
+            Some(var.ty.clone())
+        } else if let Some(c) = self.lookup_const(name) {
+            Some(c.0.clone())
+        } else {
+            None
+        }
     }
 
     fn lookup_fn(&self, name: &str) -> Option<&FuncSig> {
@@ -221,6 +232,18 @@ impl Analyzer {
         self.globe.push_scope();
         for node in nodes {
             match node {
+                AstNode::Statement(stmt) => {
+                    if let StatementNode::Const(_) = stmt {
+                        self.analyse_statement(stmt)?;
+                    }
+                }
+                _ => {
+                    // Do nothing in this pass
+                }
+            }
+        }
+        for node in nodes {
+            match node {
                 AstNode::Function(func) => {
                     let name = func.name.lexeme.clone();
                     let params: Vec<RxType> = func
@@ -229,10 +252,26 @@ impl Analyzer {
                         .iter()
                         .map(|p| self.type_from_ann(p.type_annotation.as_ref(), &p.name))
                         .collect::<SemanticResult<Vec<_>>>()?;
-                    let ret = match &func.return_type {
+                    let mut ret = match &func.return_type {
                         Some(t) => self.type_from_node(t)?,
                         None => RxType::Unit,
                     };
+
+                    if name.as_str() == "main" {
+                        if !params.is_empty() {
+                            return Err(SemanticError::MainFunctionSignatureInvalid {
+                                line: func.name.position.line,
+                                column: func.name.position.column,
+                            });
+                        }
+                        if ret != RxType::Unit {
+                            return Err(SemanticError::MainFunctionSignatureInvalid {
+                                line: func.name.position.line,
+                                column: func.name.position.column,
+                            });
+                        }
+                        ret = RxType::MainReturn;
+                    }
 
                     let _ = self.globe.declare_fn(name, params, ret, func.name.clone());
                 }
@@ -249,11 +288,6 @@ impl Analyzer {
                 }
                 AstNode::Trait(td) => {
                     self.declare_trait(td)?;
-                }
-                AstNode::Statement(stmt) => {
-                    if let StatementNode::Const(ctn) = stmt {
-                        self.analyse_statement(stmt)?;
-                    }
                 }
                 _ => {
                     // Do nothing in this pass
@@ -288,6 +322,9 @@ impl Analyzer {
                 }
 
                 AstNode::Statement(stmt) => {
+                    if let StatementNode::Const(_) = stmt {
+                        continue;
+                    }
                     self.globe.push_scope();
                     self.analyse_statement(stmt)?;
                     self.globe.pop_scope();
@@ -613,41 +650,82 @@ impl Analyzer {
                 token: param.name.clone(),
             })?;
         }
-        let ret_ty = func
+        let mut ret_ty = func
             .return_type
             .as_ref()
             .map(|t| self.type_from_node(t))
             .transpose()?
             .unwrap_or(RxType::Unit);
+        if self.globe.scope_stack.len() == 2 && func.name.lexeme == "main" {
+            if !param_types.is_empty() {
+                return Err(SemanticError::MainFunctionSignatureInvalid {
+                    line: func.name.position.line,
+                    column: func.name.position.column,
+                });
+            }
+            if ret_ty != RxType::Unit {
+                return Err(SemanticError::MainFunctionSignatureInvalid {
+                    line: func.name.position.line,
+                    column: func.name.position.column,
+                });
+            }
+            ret_ty = RxType::MainReturn;
+        }
         self.current_return_type = Some(ret_ty.clone());
         let blk_ty = self.analyse_block(&func.body)?;
         if RxType::unify(&ret_ty, &blk_ty).is_none() {
-            return Err(SemanticError::FunctionReturnTypeMismatch {
-                name: func.name.lexeme.clone(),
-                expected: ret_ty,
-                found: blk_ty,
-                line: func.fn_token.position.line,
-                column: func.fn_token.position.column,
-            });
+            if ret_ty == RxType::MainReturn && blk_ty == RxType::Unit {
+                // allow main to return () implicitly
+            } else {
+                return Err(SemanticError::FunctionReturnTypeMismatch {
+                    name: func.name.lexeme.clone(),
+                    expected: ret_ty,
+                    found: blk_ty,
+                    line: func.name.position.line,
+                    column: func.name.position.column,
+                });
+            }
         }
+        self.globe.pop_scope();
         Ok(())
     }
 
     pub fn analyse_block(&mut self, blk: &BlockNode) -> SemanticResult<RxType> {
         self.globe.push_scope();
         let mut ret = RxType::Unit;
-        for stmt in blk.stats.iter().take(blk.stats.len()) {
+        let mut exit_flag = false;
+        for stmt in blk.stats.iter() {
+            if exit_flag {
+                return Err(SemanticError::Generic {
+                    msg: "Unreachable code".into(),
+                    line: 0,
+                    column: 0,
+                });
+            }
             let ty = self.analyse_statement(stmt)?;
             if let Some(t) = ty {
                 if t.is_never() {
                     ret = RxType::Never;
                     break;
                 }
+
+                if matches!(t, RxType::MainReturn) {
+                    ret = RxType::MainReturn;
+                    exit_flag = true;
+                }
             }
         }
         if let Some(expr) = &blk.final_expr {
+            if exit_flag {
+                return Err(SemanticError::Generic {
+                    msg: "Unreachable code".into(),
+                    line: 0,
+                    column: 0,
+                });
+            }
             ret = self.analyse_expression(expr)?
         }
+        self.globe.pop_scope();
         Ok(ret)
     }
 
@@ -677,6 +755,9 @@ impl Analyzer {
                             });
                         }
                     }
+                }
+                if matches!(identifier.token_type, TokenType::Underscore) {
+                    return Ok(None);
                 }
                 self.globe.declare_var(Symbol {
                     ty: expr_ty,
@@ -724,7 +805,8 @@ impl Analyzer {
                 value,
             }) => {
                 let decl_ty = self.type_from_node(&type_annotation)?;
-                let (value_ty, const_val) = ConstFolder::calc_expr(&value, const_token)?;
+                let (value_ty, const_val) =
+                    ConstFolder::calc_expr(&value, const_token, &self.globe.const_items)?;
                 if RxType::unify(&decl_ty, &value_ty).is_none() {
                     return Err(SemanticError::AssignTypeMismatched {
                         expected: decl_ty,
@@ -733,7 +815,7 @@ impl Analyzer {
                         column: const_token.position.column,
                     });
                 }
-                self.globe.declare_const(name, &const_val)?;
+                self.globe.declare_const(name, &decl_ty, &const_val)?;
                 Ok(None)
             }
             // Handled later
@@ -751,8 +833,8 @@ impl Analyzer {
     pub fn analyse_expression(&mut self, expr: &ExpressionNode) -> SemanticResult<RxType> {
         match expr {
             ExpressionNode::Identifier(token) => {
-                if let Some(symbol) = self.globe.lookup_var(&token.lexeme) {
-                    Ok(symbol.ty.clone())
+                if let Some(ty) = self.globe.get_var_or_const_type(&token.lexeme) {
+                    Ok(ty.clone())
                 } else {
                     Err(SemanticError::UndefinedIdentifier {
                         name: token.lexeme.clone(),
@@ -813,8 +895,10 @@ impl Analyzer {
                 Ok(RxType::Unit)
             }
             ExpressionNode::Ref(r) => Ok(self.analyse_ref(r)?),
+            ExpressionNode::Deref(d) => Ok(self.analyse_deref(d)?),
             ExpressionNode::Return(ret) => Ok(self.analyse_return(ret)?),
             ExpressionNode::As(a) => Ok(self.analyse_as(a)?),
+            ExpressionNode::Underscore(_) => Ok(RxType::Never),
         }
     }
 
@@ -823,14 +907,14 @@ impl Analyzer {
         match &u.operator.token_type {
             TokenType::Plus | TokenType::Minus => {
                 if rt.is_integer() {
+                    Ok(rt)
+                } else {
                     Err(SemanticError::InvalidUnaryOperandType {
                         expected_type: "numeric type".to_string(),
                         found_type: format!("{}", rt),
                         line: u.operator.position.line,
                         column: u.operator.position.column,
                     })
-                } else {
-                    Ok(rt)
                 }
             }
             TokenType::Not => {
@@ -1035,6 +1119,18 @@ impl Analyzer {
         Ok(ty.clone())
     }
 
+    fn analyse_deref(&mut self, d: &DerefExprNode) -> SemanticResult<RxType> {
+        let ty = self.analyse_expression(&d.operand)?;
+        match ty {
+            RxType::Ref(inner, _) => Ok(*inner),
+            _ => Err(SemanticError::Generic {
+                msg: "Cannot dereference non-reference type".to_string(),
+                line: d.star_token.position.line,
+                column: d.star_token.position.column,
+            }),
+        }
+    }
+
     fn analyse_ref(&mut self, r: &RefExprNode) -> SemanticResult<RxType> {
         let ty = self.analyse_expression(&r.operand)?;
         if r.mutable {
@@ -1146,48 +1242,13 @@ impl Analyzer {
                 Ok(RxType::Array(Box::new(elem_ty), Some(elements.len())))
             }
 
-            ArrayLiteralNode::Repeated { element, size } => match size.token_type {
-                TokenType::IntegerLiteral => {
-                    let n = size
-                        .lexeme
-                        .parse::<usize>()
-                        .map_err(|_| SemanticError::Generic {
-                            msg: "Array size must be a non-negative integer".to_string(),
-                            line: size.position.line,
-                            column: size.position.column,
-                        })?;
-                    let elem_ty = self.analyse_expression(element)?;
-                    Ok(RxType::Array(Box::new(elem_ty), Some(n)))
-                }
-                TokenType::Identifier => {
-                    let Some(val) = self.globe.lookup_const(&size.lexeme).cloned() else {
-                        return Err(SemanticError::UnknownConstant {
-                            name: size.lexeme.clone(),
-                            line: size.position.line,
-                            column: size.position.column,
-                        });
-                    };
-                    let len = match val {
-                        RxValue::USize(n) => n,
-                        _ => {
-                            return Err(SemanticError::Generic {
-                                msg: "Array size must be usize".to_string(),
-                                line: size.position.line,
-                                column: size.position.column,
-                            });
-                        }
-                    };
-                    let elem_ty = self.analyse_expression(element)?;
-                    Ok(RxType::Array(Box::new(elem_ty), Some(len)))
-                }
-                _ => {
-                    return Err(SemanticError::Generic {
-                        msg: "Array size must be usize".to_string(),
-                        line: size.position.line,
-                        column: size.position.column,
-                    });
-                }
-            },
+            ArrayLiteralNode::Repeated { element, size } => {
+                let elem_ty = self.analyse_expression(element)?;
+                let (_, size_val) =
+                    ConstFolder::calc_expr(size, &Token::default(), &self.globe.const_items)?;
+                let size = size_val.as_usize()?;
+                Ok(RxType::Array(Box::new(elem_ty), Some(size)))
+            }
         }
     }
 
@@ -1292,23 +1353,19 @@ impl Analyzer {
         }
         let then_ty = self.analyse_block(&i.then_block)?;
         let else_ty = match &i.else_block {
-            Some(ElseBodyNode::Block(b)) => Some(self.analyse_block(b)?),
-            Some(ElseBodyNode::If(i)) => Some(self.analyse_if(i)?),
-            None => None,
+            Some(ElseBodyNode::Block(b)) => self.analyse_block(b)?,
+            Some(ElseBodyNode::If(i)) => self.analyse_if(i)?,
+            None => RxType::Unit,
         };
-        if let Some(elty) = else_ty {
-            if let Some(unified) = RxType::unify(&then_ty, &elty) {
-                Ok(unified)
-            } else {
-                Err(SemanticError::BranchTypeMismatched {
-                    then_ty,
-                    else_ty: elty,
-                    line,
-                    column,
-                })
-            }
+        if let Some(ty) = RxType::unify(&then_ty, &else_ty) {
+            Ok(ty)
         } else {
-            Ok(then_ty)
+            Err(SemanticError::BranchTypeMismatched {
+                then_ty,
+                else_ty,
+                line,
+                column,
+            })
         }
     }
 
@@ -1514,6 +1571,7 @@ impl Analyzer {
                 RxType::Str => "str".to_string(),
                 RxType::USize => "usize".to_string(),
                 RxType::U32 => "u32".to_string(),
+                RxType::IntLiteral => "u32".to_string(),
                 other => {
                     return Err(SemanticError::Generic {
                         msg: format!("Method call receiver must be struct, found {}", other),
@@ -1527,6 +1585,7 @@ impl Analyzer {
             RxType::Str => "str".to_string(),
             RxType::USize => "usize".to_string(),
             RxType::U32 => "u32".to_string(),
+            RxType::IntLiteral => "u32".to_string(),
             other => {
                 return Err(SemanticError::Generic {
                     msg: format!("Method call receiver must be struct, found {}", other),
@@ -1594,7 +1653,11 @@ impl Analyzer {
                 if let RxType::Ref(inner, _) = base {
                     base = *inner;
                 }
-                (base == *ty, ty.clone())
+                if let Some(unified_ty) = RxType::unify(&base, ty) {
+                    (true, unified_ty)
+                } else {
+                    (false, ty.clone())
+                }
             }
             SelfKind::Borrowed { ty } => {
                 let mut base = obj_expr_ty.clone();
@@ -1604,7 +1667,7 @@ impl Analyzer {
                 // owned T auto-borrows; for wildcard array treat any array as match
                 let ok = match (&base, ty) {
                     (RxType::Array(_, _), RxType::Array(_, _)) => true,
-                    _ => base == *ty,
+                    _ => RxType::unify(&base, ty).is_some(),
                 };
                 (ok, RxType::Ref(Box::new(ty.clone()), false))
             }
@@ -1612,7 +1675,7 @@ impl Analyzer {
                 // require either &mut T, or mutable owned lvalue T (auto &mut). Reject immutable.
                 let base = obj_expr_ty.clone();
                 if let RxType::Ref(inner, is_mut) = &obj_expr_ty {
-                    if **inner == *ty && *is_mut {
+                    if RxType::unify(&inner, ty).is_some() && *is_mut {
                         (true, RxType::Ref(Box::new(ty.clone()), true))
                     } else {
                         (false, RxType::Ref(Box::new(ty.clone()), true))
@@ -1623,7 +1686,7 @@ impl Analyzer {
                     if let RxType::Ref(inner, _) = base2 {
                         base2 = *inner;
                     }
-                    if base2 == *ty {
+                    if RxType::unify(&base2, ty).is_some() {
                         (
                             self.is_mutable_lvalue(&mc.object),
                             RxType::Ref(Box::new(ty.clone()), true),
@@ -1680,6 +1743,7 @@ impl Analyzer {
                     _ => s.mutable,
                 })
                 .unwrap_or(false),
+            ExpressionNode::Deref(DerefExprNode { operand, .. }) => self.is_mutable_lvalue(operand),
             ExpressionNode::Index(IndexExprNode { array, .. }) => self.is_mutable_lvalue(array),
             ExpressionNode::Member(MemberExprNode { object, .. }) => self.is_mutable_lvalue(object),
             _ => false,
@@ -1717,45 +1781,13 @@ impl Analyzer {
             }
             TypeNode::Array { elem_type, size } => {
                 let elem_ty = self.type_from_node(&elem_type)?;
-                let len = if let Some(tok) = size {
-                    match tok.token_type {
-                        TokenType::IntegerLiteral => {
-                            let n = tok.lexeme.parse::<usize>().map_err(|_| {
-                                SemanticError::Generic {
-                                    msg: "Array size must be a non-negative integer".to_string(),
-                                    line: tok.position.line,
-                                    column: tok.position.column,
-                                }
-                            })?;
-                            Some(n)
-                        }
-                        TokenType::Identifier => {
-                            let Some(val) = self.globe.lookup_const(&tok.lexeme).cloned() else {
-                                return Err(SemanticError::UnknownConstant {
-                                    name: tok.lexeme.clone(),
-                                    line: tok.position.line,
-                                    column: tok.position.column,
-                                });
-                            };
-                            match val {
-                                RxValue::USize(n) => Some(n),
-                                _ => {
-                                    return Err(SemanticError::Generic {
-                                        msg: "Array size must be usize".to_string(),
-                                        line: tok.position.line,
-                                        column: tok.position.column,
-                                    });
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(SemanticError::Generic {
-                                msg: "Array size must be usize".to_string(),
-                                line: tok.position.line,
-                                column: tok.position.column,
-                            });
-                        }
-                    }
+                let len = if let Some(size_expr) = size {
+                    let (_, size_val) = ConstFolder::calc_expr(
+                        size_expr,
+                        &Token::default(),
+                        &self.globe.const_items,
+                    )?;
+                    Some(size_val.as_usize()?)
                 } else {
                     None
                 };

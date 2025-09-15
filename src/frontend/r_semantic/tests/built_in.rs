@@ -48,7 +48,7 @@ fn get_string_assign_ok() {
 
 #[test]
 fn get_int_use_ok() {
-    let src = r#"fn main() { let a: i32 = readInt(); let b: i32 = readInt(); printlnInt(a + b); }"#;
+    let src = r#"fn main() { let a: i32 = getInt(); let b: i32 = getInt(); printlnInt(a + b); }"#;
     assert!(analyze_src(src).is_ok());
 }
 
