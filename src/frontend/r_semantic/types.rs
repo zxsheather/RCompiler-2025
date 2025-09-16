@@ -168,6 +168,7 @@ pub enum RxValue {
     String(String),
     Char(char),
     Str(&'static str),
+    Array(RxType, usize, Vec<RxValue>),
 }
 
 impl RxValue {
@@ -182,6 +183,9 @@ impl RxValue {
             RxValue::String(_) => RxType::String,
             RxValue::Char(_) => RxType::Char,
             RxValue::Str(_) => RxType::Str,
+            RxValue::Array(elem_type, size, _) => {
+                RxType::Array(Box::new(elem_type.clone()), Some(*size))
+            }
         }
     }
 

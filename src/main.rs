@@ -17,13 +17,15 @@ fn print_usage() {
         "Usage:
   RCompiler-2025 --ast-json  [INPUT] [--out OUTPUT]
   RCompiler-2025 --ast-pretty [INPUT] [--out OUTPUT]
-    RCompiler-2025 --semantic-test [TESTDIR]
+  RCompiler-2025 --semantic-test [TESTDIR]
+  RCompiler-2025 --semantic-test-2 [TESTDIR]
 
 Notes:
   - If INPUT is omitted, source is read from stdin.
   - One of --ast-json or --ast-pretty must be provided.
-    - If --out is omitted, result is printed to stdout.
-    - --semantic-test will run all semantic tests under testcases/semantic-1 by default."
+  - If --out is omitted, result is printed to stdout.
+  - --semantic-test will run all semantic tests under testcases/semantic-1 by default.
+  - --semantic-test-2 will run all semantic tests under testcases/semantic-2 by default."
     );
 }
 
@@ -329,6 +331,20 @@ fn main() {
 
     if flag == "--semantic-test" {
         let maybe_dir = args.next();
+        let code = run_semantic_tests(maybe_dir);
+        let overall_duration = overall_start.elapsed();
+        eprintln!(
+            "Overall execution time: {:.3}ms",
+            overall_duration.as_secs_f64() * 1000.0
+        );
+        if code != 0 { /* failure already reported */ }
+        return;
+    }
+
+    if flag == "--semantic-test-2" {
+        let maybe_dir = args
+            .next()
+            .or_else(|| Some("testcases/semantic-2".to_string()));
         let code = run_semantic_tests(maybe_dir);
         let overall_duration = overall_start.elapsed();
         eprintln!(

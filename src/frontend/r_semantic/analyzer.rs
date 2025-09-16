@@ -1171,6 +1171,13 @@ impl Analyzer {
         let ty = self.analyse_expression(&r.operand)?;
         if r.mutable {
             match &*r.operand {
+                ExpressionNode::IntegerLiteral(_)
+                | ExpressionNode::StringLiteral(_)
+                | ExpressionNode::CharLiteral(_)
+                | ExpressionNode::BoolLiteral(_)
+                | ExpressionNode::ArrayLiteral(_)
+                | ExpressionNode::TupleLiteral(_)
+                | ExpressionNode::StructLiteral(_) => {}
                 ExpressionNode::Identifier(tok) => {
                     let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                         return Err(SemanticError::UndefinedIdentifier {
@@ -1332,6 +1339,13 @@ impl Analyzer {
         let Some(field_map) = self.globe.structs.get(&name).cloned() else {
             return Err(SemanticError::UnknownStruct { name, line, column });
         };
+        if field_map.len() != s.fields.len() {
+            return Err(SemanticError::Generic {
+                msg: "struct field count mismatch".to_string(),
+                line,
+                column,
+            });
+        }
         for field in s.fields.iter() {
             let found = self.analyse_expression(&field.value)?;
             let Some(expected) = field_map.get(&field.name.lexeme) else {

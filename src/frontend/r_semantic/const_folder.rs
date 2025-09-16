@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
-    r_parser::ast::{BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode, UnaryExprNode},
+    r_parser::ast::{
+        ArrayLiteralNode, BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode, UnaryExprNode,
+    },
     r_semantic::{
         error::{SemanticError, SemanticResult},
         types::{RxType, RxValue},
@@ -19,6 +21,10 @@ impl ConstFolder {
     ) -> SemanticResult<(RxType, RxValue)> {
         match expr {
             ExpressionNode::IntegerLiteral(token) => Self::parse_int_literal(token),
+            ExpressionNode::StringLiteral(token) => {
+                let s = token.lexeme.trim_matches('"').to_string();
+                Ok((RxType::String, RxValue::String(s)))
+            }
             ExpressionNode::BoolLiteral(token) => {
                 let v = match token.token_type {
                     TokenType::True => true,
@@ -38,6 +44,47 @@ impl ConstFolder {
                     .unwrap_or('\0');
                 Ok((RxType::Char, RxValue::Char(ch)))
             }
+            ExpressionNode::ArrayLiteral(node) => match node {
+                ArrayLiteralNode::Elements { elements } => {
+                    let mut vals = Vec::new();
+                    let mut elem_type = RxType::Never;
+                    for elem in elements {
+                        let (ty, val) = Self::calc_expr(&elem, report_tok, consts)?;
+                        if let Some(unified_ty) = RxType::unify(&elem_type, &ty) {
+                            elem_type = unified_ty;
+                            vals.push(val);
+                        } else {
+                            return Err(SemanticError::InvalidConstExpr {
+                                expr: "array elements have mismatched types".to_string(),
+                                line: report_tok.position.line,
+                                column: report_tok.position.column,
+                            });
+                        }
+                    }
+                    Ok((
+                        RxType::Array(Box::new(elem_type.clone()), Some(vals.len())),
+                        RxValue::Array(elem_type, vals.len(), vals),
+                    ))
+                }
+                ArrayLiteralNode::Repeated { element, size } => {
+                    let (elem_ty, elem_val) = Self::calc_expr(&element, report_tok, consts)?;
+                    let (size_ty, size_val) = Self::calc_expr(&size, report_tok, consts)?;
+                    if RxType::unify(&size_ty, &RxType::USize).is_some() {
+                        let size_usize = size_val.as_usize()?;
+                        let vals = vec![elem_val; size_usize];
+                        Ok((
+                            RxType::Array(Box::new(elem_ty.clone()), Some(size_usize)),
+                            RxValue::Array(elem_ty, size_usize, vals),
+                        ))
+                    } else {
+                        Err(SemanticError::InvalidConstExpr {
+                            expr: "array size must be usize".to_string(),
+                            line: report_tok.position.line,
+                            column: report_tok.position.column,
+                        })
+                    }
+                }
+            },
             ExpressionNode::Identifier(token) => {
                 if let Some(val) = consts.get(&token.lexeme) {
                     Ok(val.clone())
@@ -333,20 +380,6 @@ impl ConstFolder {
             RxType::USize => RxValue::USize(v as usize),
             RxType::IntLiteral => RxValue::IntLiteral(v),
             _ => RxValue::IntLiteral(v),
-        }
-    }
-
-    fn value_type(v: &RxValue) -> RxType {
-        match v {
-            RxValue::I32(_) => RxType::I32,
-            RxValue::U32(_) => RxType::U32,
-            RxValue::ISize(_) => RxType::ISize,
-            RxValue::USize(_) => RxType::USize,
-            RxValue::IntLiteral(_) => RxType::IntLiteral,
-            RxValue::Bool(_) => RxType::Bool,
-            RxValue::String(_) => RxType::String,
-            RxValue::Char(_) => RxType::Char,
-            RxValue::Str(_) => RxType::Str,
         }
     }
 
