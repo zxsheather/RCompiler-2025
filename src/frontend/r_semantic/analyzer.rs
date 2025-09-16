@@ -248,35 +248,13 @@ impl Analyzer {
         for node in nodes {
             match node {
                 AstNode::Function(func) => {
-                    let name = func.name.lexeme.clone();
-                    let params: Vec<RxType> = func
-                        .param_list
-                        .params
-                        .iter()
-                        .map(|p| self.type_from_ann(p.type_annotation.as_ref(), &p.name))
-                        .collect::<SemanticResult<Vec<_>>>()?;
-                    let mut ret = match &func.return_type {
-                        Some(t) => self.type_from_node(t)?,
-                        None => RxType::Unit,
-                    };
-
-                    if name.as_str() == "main" {
-                        if !params.is_empty() {
-                            return Err(SemanticError::MainFunctionSignatureInvalid {
-                                line: func.name.position.line,
-                                column: func.name.position.column,
-                            });
-                        }
-                        if ret != RxType::Unit {
-                            return Err(SemanticError::MainFunctionSignatureInvalid {
-                                line: func.name.position.line,
-                                column: func.name.position.column,
-                            });
-                        }
-                        ret = RxType::MainReturn;
-                    }
-
-                    let _ = self.globe.declare_fn(name, params, ret, func.name.clone());
+                    let sig = self.extract_sig(func)?;
+                    let _ = self.globe.declare_fn(
+                        sig.token.lexeme.clone(),
+                        sig.param_types,
+                        sig.return_type,
+                        sig.token,
+                    );
                 }
                 AstNode::Struct(sd) => {
                     let mut field_map = HashMap::new();
@@ -355,6 +333,43 @@ impl Analyzer {
         }
         self.globe.pop_scope();
         Ok(())
+    }
+
+    fn extract_sig(&self, func: &FunctionNode) -> SemanticResult<FuncSig> {
+        let name = func.name.lexeme.clone();
+        let params: Vec<RxType> = func
+            .param_list
+            .params
+            .iter()
+            .map(|p| self.type_from_ann(p.type_annotation.as_ref(), &p.name))
+            .collect::<SemanticResult<Vec<_>>>()?;
+        let mut ret = match &func.return_type {
+            Some(t) => self.type_from_node(t)?,
+            None => RxType::Unit,
+        };
+
+        if name.as_str() == "main" {
+            if !params.is_empty() {
+                return Err(SemanticError::MainFunctionSignatureInvalid {
+                    line: func.name.position.line,
+                    column: func.name.position.column,
+                });
+            }
+            if ret != RxType::Unit {
+                return Err(SemanticError::MainFunctionSignatureInvalid {
+                    line: func.name.position.line,
+                    column: func.name.position.column,
+                });
+            }
+            ret = RxType::MainReturn;
+        }
+
+        Ok(FuncSig {
+            param_types: params,
+            return_type: ret,
+            token: func.name.clone(),
+            self_kind: SelfKind::None,
+        })
     }
 
     pub fn declare_trait(&mut self, td: &TraitDeclNode) -> SemanticResult<()> {
@@ -757,7 +772,11 @@ impl Analyzer {
                 type_annotation,
                 value,
             }) => {
-                let mut expr_ty = self.analyse_expression(&value)?;
+                let mut expr_ty = if let Some(val) = value {
+                    self.analyse_expression(val)?
+                } else {
+                    RxType::Never
+                };
                 if let Some(ty) = type_annotation {
                     let decl_ty = self.type_from_node(&ty)?;
                     match RxType::unify(&decl_ty, &expr_ty) {
@@ -838,6 +857,13 @@ impl Analyzer {
             }
             // Handled later
             StatementNode::Func(func) => {
+                let sig = self.extract_sig(func)?;
+                self.globe.declare_fn(
+                    sig.token.lexeme.clone(),
+                    sig.param_types,
+                    sig.return_type,
+                    sig.token,
+                )?;
                 self.analyse_function(func)?;
                 Ok(None)
             }

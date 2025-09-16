@@ -103,7 +103,9 @@ impl RxType {
 
             (RxType::IntLiteral, t) if t.is_concrete_int() => Some(t.clone()),
             (t, RxType::IntLiteral) if t.is_concrete_int() => Some(t.clone()),
-            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a == size_b || size_b.is_none() => {
+            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b))
+                if size_a == size_b || size_b.is_none() =>
+            {
                 let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
                     return None;
                 };

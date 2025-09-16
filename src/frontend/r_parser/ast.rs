@@ -173,7 +173,7 @@ pub struct LetStatementNode {
     pub mutable: bool,
     pub identifier: Token,
     pub type_annotation: Option<TypeNode>,
-    pub value: ExpressionNode,
+    pub value: Option<ExpressionNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

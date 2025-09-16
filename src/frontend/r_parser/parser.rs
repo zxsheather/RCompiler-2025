@@ -401,6 +401,17 @@ impl Parser {
                     None
                 };
 
+                if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                    return Ok(StatementNode::Let(LetStatementNode {
+                        let_token,
+                        mutable,
+                        identifier,
+                        type_annotation,
+                        value: None,
+                    }));
+                }
+
                 self.expect_type(&TokenType::Eq)?;
                 let value = self.parse_expression()?;
                 self.expect_type(&TokenType::Semicolon)?;
@@ -410,7 +421,7 @@ impl Parser {
                     mutable,
                     identifier,
                     type_annotation,
-                    value,
+                    value: Some(value),
                 }))
             }
             TokenType::Identifier => {
