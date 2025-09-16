@@ -62,5 +62,5 @@ fn const_assign_error() {
 fn const_type_mismatch_error() {
     let src = r#"fn main() { const x: i32 = "hello"; const y: bool = 123; }"#;
     let err = analyze_src(src).unwrap_err();
-    assert!(err.contains("type"), "err: {err}");
+    assert!(err.contains("Type"), "err: {err}");
 }

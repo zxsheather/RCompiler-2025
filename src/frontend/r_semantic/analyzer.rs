@@ -7,8 +7,8 @@ use crate::frontend::{
         BreakExprNode, CallExprNode, ConstItemNode, ContinueExprNode, DerefExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
         IndexExprNode, LetStatementNode, LoopExprNode, MemberExprNode, MethodCallExprNode,
-        RefExprNode, ReturnExprNode, StatementNode, StructLiteralNode, TraitDeclNode, TypeNode,
-        UnaryExprNode, WhileExprNode,
+        RefExprNode, ReturnExprNode, StatementNode, StaticMemberExprNode, StructLiteralNode,
+        TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
@@ -81,6 +81,7 @@ pub struct Globe {
     traits: HashMap<String, HashMap<String, FuncSig>>, // trait -> method -> sig
     impl_traits: HashMap<String, Vec<String>>,   // struct -> traits
     const_items: HashMap<String, (RxType, RxValue)>, // name -> (type, value)
+    enums: HashMap<String, HashMap<String, usize>>, // enum -> (name, index)
 }
 
 impl Globe {
@@ -176,6 +177,7 @@ pub struct Analyzer {
     pub globe: Globe,
     current_return_type: Option<RxType>,
     loop_stack: Vec<LoopContext>,
+    current_struct: Option<String>,
 }
 
 pub struct LoopContext {
@@ -189,6 +191,7 @@ impl Analyzer {
             globe: Globe::default(),
             current_return_type: None,
             loop_stack: Vec::new(),
+            current_struct: None,
         }
     }
 
@@ -289,6 +292,13 @@ impl Analyzer {
                 AstNode::Trait(td) => {
                     self.declare_trait(td)?;
                 }
+                AstNode::Enum(ed) => {
+                    let mut enum_map = HashMap::new();
+                    for (i, var) in ed.variants.iter().enumerate() {
+                        enum_map.insert(var.name.lexeme.clone(), i);
+                    }
+                    self.globe.enums.insert(ed.name.lexeme.clone(), enum_map);
+                }
                 _ => {
                     // Do nothing in this pass
                 }
@@ -316,9 +326,11 @@ impl Analyzer {
                 }
 
                 AstNode::Impl(i) => {
+                    self.current_struct = Some(i.name.lexeme.clone());
                     for m in i.methods.iter() {
                         self.analyse_function(m)?;
                     }
+                    self.current_struct = None;
                 }
 
                 AstNode::Statement(stmt) => {
@@ -405,6 +417,7 @@ impl Analyzer {
 
     fn analyse_impl_struct(&mut self, impl_node: &ImplNode) -> SemanticResult<()> {
         let st_name = impl_node.name.lexeme.clone();
+        self.current_struct = Some(st_name.clone());
         if !self.globe.structs.contains_key(&st_name) {
             return Err(SemanticError::UnknownStruct {
                 name: st_name,
@@ -493,6 +506,7 @@ impl Analyzer {
                 );
             }
         }
+        self.current_struct = None;
         Ok(())
     }
 
@@ -512,6 +526,8 @@ impl Analyzer {
                 column: it.type_name.position.column,
             });
         }
+
+        self.current_struct = Some(it.type_name.lexeme.clone());
 
         let mut methods = HashMap::new();
         // Currently only support struct.method
@@ -633,6 +649,8 @@ impl Analyzer {
                 .methods
                 .insert((it.type_name.lexeme.clone(), name), sig);
         }
+
+        self.current_struct = None;
 
         Ok(())
     }
@@ -884,16 +902,7 @@ impl Analyzer {
             ExpressionNode::MethodCall(mc) => Ok(self.analyse_method_call(mc)?),
             ExpressionNode::Member(m) => Ok(self.analyse_member(m)?),
             ExpressionNode::StructLiteral(sl) => Ok(self.analyse_struct_literal(sl)?),
-            ExpressionNode::StaticMember(sm) => {
-                if !self.globe.structs.contains_key(&sm.type_name.lexeme) {
-                    return Err(SemanticError::UnknownStruct {
-                        name: sm.type_name.lexeme.clone(),
-                        line: sm.type_name.position.line,
-                        column: sm.type_name.position.column,
-                    });
-                }
-                Ok(RxType::Unit)
-            }
+            ExpressionNode::StaticMember(sm) => Ok(self.analyse_static_member(sm)?),
             ExpressionNode::Ref(r) => Ok(self.analyse_ref(r)?),
             ExpressionNode::Deref(d) => Ok(self.analyse_deref(d)?),
             ExpressionNode::Return(ret) => Ok(self.analyse_return(ret)?),
@@ -946,7 +955,7 @@ impl Analyzer {
         let line = b.operator.position.line;
         let column = b.operator.position.column;
         match op_token {
-            Plus | Minus | Mul | Div | Percent | And | Or | Xor => {
+            Plus | Minus | Mul | Div | Percent | And | Or | Xor | SL | SR => {
                 if !lt.is_integer() {
                     Err(SemanticError::ArityMismatch {
                         operator: op_token.as_str().to_string(),
@@ -970,7 +979,21 @@ impl Analyzer {
                 }
             }
 
-            EqEq | NEq | Lt | LEq | Gt | GEq => {
+            EqEq | NEq => {
+                if let Some(_) = RxType::unify(&lt, &rt) {
+                    Ok(RxType::Bool)
+                } else {
+                    Err(SemanticError::MismatchedBinaryTypes {
+                        op: op_token.as_str().to_string(),
+                        left: lt,
+                        right: rt,
+                        line,
+                        column,
+                    })
+                }
+            }
+
+            Lt | LEq | Gt | GEq => {
                 if !lt.is_integer() {
                     Err(SemanticError::ArityMismatch {
                         operator: op_token.as_str().to_string(),
@@ -1005,7 +1028,7 @@ impl Analyzer {
                 }
             }
 
-            PlusEq | MinusEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq => {
+            PlusEq | MinusEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq | SLEq | SREq => {
                 // Treat as: l = l <op> r
                 if !self.is_mutable_lvalue(&b.left_operand) {
                     return Err(SemanticError::AssignImmutableVar {
@@ -1119,6 +1142,29 @@ impl Analyzer {
         Ok(ty.clone())
     }
 
+    fn analyse_static_member(&mut self, sm: &StaticMemberExprNode) -> SemanticResult<RxType> {
+        if self.globe.structs.contains_key(&sm.type_name.lexeme) {
+            return Ok(RxType::Unit);
+        }
+        if let Some(enum_map) = self.globe.enums.get(&sm.type_name.lexeme) {
+            if let Some(_) = enum_map.get(&sm.member.lexeme) {
+                return Ok(RxType::Struct(sm.type_name.lexeme.clone()));
+            } else {
+                return Err(SemanticError::UnknownEnumVariant {
+                    enum_name: sm.type_name.lexeme.clone(),
+                    variant: sm.member.lexeme.clone(),
+                    line: sm.member.position.line,
+                    column: sm.member.position.column,
+                });
+            }
+        }
+        return Err(SemanticError::UnknownStruct {
+            name: sm.type_name.lexeme.clone(),
+            line: sm.type_name.position.line,
+            column: sm.type_name.position.column,
+        });
+    }
+
     fn analyse_deref(&mut self, d: &DerefExprNode) -> SemanticResult<RxType> {
         let ty = self.analyse_expression(&d.operand)?;
         match ty {
@@ -1135,6 +1181,13 @@ impl Analyzer {
         let ty = self.analyse_expression(&r.operand)?;
         if r.mutable {
             match &*r.operand {
+                ExpressionNode::IntegerLiteral(_)
+                | ExpressionNode::StringLiteral(_)
+                | ExpressionNode::CharLiteral(_)
+                | ExpressionNode::BoolLiteral(_)
+                | ExpressionNode::ArrayLiteral(_)
+                | ExpressionNode::TupleLiteral(_)
+                | ExpressionNode::StructLiteral(_) => {}
                 ExpressionNode::Identifier(tok) => {
                     let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                         return Err(SemanticError::UndefinedIdentifier {
@@ -1257,7 +1310,7 @@ impl Analyzer {
             match (&ret.value, &expected) {
                 (Some(val_expr), exp_ty) => {
                     let vty = self.analyse_expression(val_expr)?;
-                    if RxType::unify(&vty, exp_ty).is_none() {
+                    if RxType::unify(exp_ty, &vty).is_none() {
                         return Err(SemanticError::FunctionReturnTypeMismatch {
                             name: "<anonymous>".to_string(),
                             expected: exp_ty.clone(),
@@ -1268,7 +1321,7 @@ impl Analyzer {
                     }
                 }
                 (None, exp_ty) => {
-                    if *exp_ty != RxType::Unit {
+                    if RxType::unify(&expected, &RxType::Unit).is_none() {
                         return Err(SemanticError::FunctionReturnTypeMismatch {
                             name: "<anonymous>".to_string(),
                             expected: exp_ty.clone(),
@@ -1296,6 +1349,13 @@ impl Analyzer {
         let Some(field_map) = self.globe.structs.get(&name).cloned() else {
             return Err(SemanticError::UnknownStruct { name, line, column });
         };
+        if field_map.len() != s.fields.len() {
+            return Err(SemanticError::Generic {
+                msg: "struct field count mismatch".to_string(),
+                line,
+                column,
+            });
+        }
         for field in s.fields.iter() {
             let found = self.analyse_expression(&field.value)?;
             let Some(expected) = field_map.get(&field.name.lexeme) else {
@@ -1466,7 +1526,19 @@ impl Analyzer {
     fn analyse_call(&mut self, c: &CallExprNode) -> SemanticResult<RxType> {
         match &*c.function {
             ExpressionNode::StaticMember(sm) => {
-                let st = sm.type_name.lexeme.clone();
+                let st = if matches!(sm.type_name.token_type, TokenType::SelfUpper) {
+                    if let Some(current_struct) = &self.current_struct {
+                        current_struct.clone()
+                    } else {
+                        return Err(SemanticError::Generic {
+                            msg: "Self:: used outside struct".to_string(),
+                            line: sm.type_name.position.line,
+                            column: sm.type_name.position.column,
+                        });
+                    }
+                } else {
+                    sm.type_name.lexeme.clone()
+                };
                 let line = sm.type_name.position.line;
                 let column = sm.type_name.position.column;
                 if !self.globe.structs.contains_key(&st) {
@@ -1812,6 +1884,8 @@ impl Analyzer {
             TypeNode::Named(token) => {
                 let name = token.lexeme.clone();
                 if self.globe.structs.contains_key(&name) {
+                    RxType::Struct(name)
+                } else if self.globe.enums.contains_key(&name) {
                     RxType::Struct(name)
                 } else {
                     return Err(SemanticError::UnknownType {

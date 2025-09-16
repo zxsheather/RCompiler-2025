@@ -44,6 +44,7 @@ impl Parser {
             TokenType::Trait => Ok(AstNode::Trait(self.parse_trait_decl()?)),
             TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
+            TokenType::Enum => Ok(AstNode::Enum(self.parse_enum_decl()?)),
             TokenType::Impl => {
                 if let Some(tok) = self.peek_n_safe(2) {
                     if matches!(tok.token_type, TokenType::For) {
@@ -134,6 +135,30 @@ impl Parser {
             for_token,
             type_name,
             methods,
+        })
+    }
+
+    fn parse_enum_decl(&mut self) -> ParseResult<EnumDeclNode> {
+        let enum_token = self.expect_type(&TokenType::Enum)?;
+        let name = self.expect_type(&TokenType::Identifier)?;
+        let mut variants = Vec::new();
+        self.expect_type(&TokenType::LBrace)?;
+        loop {
+            if self.check_type(&TokenType::RBrace) {
+                break;
+            }
+            let variant = self.expect_type(&TokenType::Identifier)?;
+            variants.push(EnumVariantNode { name: variant });
+            if !self.check_type(&TokenType::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        self.expect_type(&TokenType::RBrace)?;
+        Ok(EnumDeclNode {
+            enum_token,
+            name,
+            variants,
         })
     }
 
@@ -478,12 +503,11 @@ impl Parser {
             }
             TokenType::Mul => {
                 let star = self.current_token().clone();
-                let r_bp = 135;
                 self.advance();
-                let rhs = self.parse_expr_bp(r_bp)?;
+                let operand = self.expect_type(&TokenType::Identifier)?;
                 ExpressionNode::Deref(DerefExprNode {
                     star_token: star,
-                    operand: Box::new(rhs),
+                    operand: Box::new(ExpressionNode::Identifier(operand)),
                 })
             }
             TokenType::If => self.parse_if_expression()?,
@@ -536,7 +560,7 @@ impl Parser {
                     member: member,
                 })
             }
-            TokenType::Identifier => {
+            TokenType::Identifier | TokenType::SelfUpper => {
                 let tok = self.current_token().clone();
                 self.advance();
 
@@ -584,11 +608,11 @@ impl Parser {
                 self.advance();
                 ExpressionNode::CharLiteral(tok)
             }
-            TokenType::Underscore => {
-                let tok = self.current_token().clone();
-                self.advance();
-                ExpressionNode::Underscore(tok)
-            }
+            // TokenType::Underscore => {
+            //     let tok = self.current_token().clone();
+            //     self.advance();
+            //     ExpressionNode::Underscore(tok)
+            // }
             TokenType::True | TokenType::False => {
                 let tok = self.current_token().clone();
                 self.advance();
@@ -694,14 +718,20 @@ impl Parser {
             | TokenType::ModEq
             | TokenType::AndEq
             | TokenType::OrEq
-            | TokenType::XorEq => Some((10, 9)),
+            | TokenType::XorEq
+            | TokenType::SLEq
+            | TokenType::SREq => Some((10, 9)),
             TokenType::OrOr => Some((30, 31)),
             TokenType::AndAnd => Some((40, 41)),
-            TokenType::Or => Some((50, 51)),
-            TokenType::Xor => Some((60, 61)),
-            TokenType::And => Some((70, 71)),
-            TokenType::EqEq | TokenType::NEq => Some((80, 81)),
-            TokenType::Lt | TokenType::LEq | TokenType::Gt | TokenType::GEq => Some((90, 91)),
+            TokenType::Lt
+            | TokenType::LEq
+            | TokenType::Gt
+            | TokenType::GEq
+            | TokenType::EqEq
+            | TokenType::NEq => Some((60, 61)),
+            TokenType::Or => Some((70, 71)),
+            TokenType::Xor => Some((80, 81)),
+            TokenType::And => Some((90, 91)),
             TokenType::SL | TokenType::SR => Some((100, 101)),
             TokenType::Plus | TokenType::Minus => Some((110, 111)),
             TokenType::Mul | TokenType::Div | TokenType::Percent => Some((120, 121)),
@@ -804,7 +834,9 @@ impl Parser {
 
     fn parse_if_expression(&mut self) -> ParseResult<ExpressionNode> {
         let if_token = self.expect_type(&TokenType::If)?;
+        self.expect_type(&TokenType::LParen)?;
         let condition = self.parse_expression()?;
+        self.expect_type(&TokenType::RParen)?;
         let then_block = self.parse_block()?;
         let else_block = if self.check_type(&TokenType::Else) {
             self.advance();
@@ -832,7 +864,9 @@ impl Parser {
 
     fn parse_while_expression(&mut self) -> ParseResult<ExpressionNode> {
         let while_token = self.expect_type(&TokenType::While)?;
+        self.expect_type(&TokenType::LParen)?;
         let condition = self.parse_expression()?;
+        self.expect_type(&TokenType::RParen)?;
         let body = self.parse_block()?;
         Ok(ExpressionNode::While(Box::new(WhileExprNode {
             while_token,
@@ -853,11 +887,11 @@ impl Parser {
     fn parse_param_list(&mut self) -> ParseResult<ParamListNode> {
         let mut params = Vec::new();
         self.expect_type(&TokenType::LParen)?;
-        if self.check_type(&TokenType::RParen) {
-            self.advance();
-            return Ok(ParamListNode { params });
-        }
         loop {
+            if self.check_type(&TokenType::RParen) {
+                self.advance();
+                return Ok(ParamListNode { params });
+            }
             let param = self.parse_param()?;
             params.push(param);
             if self.check_type(&TokenType::Comma) {

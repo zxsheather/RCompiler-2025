@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use frontend::r_lexer::lexer::Lexer;
 use frontend::r_parser::parser::Parser;
@@ -16,13 +17,15 @@ fn print_usage() {
         "Usage:
   RCompiler-2025 --ast-json  [INPUT] [--out OUTPUT]
   RCompiler-2025 --ast-pretty [INPUT] [--out OUTPUT]
-    RCompiler-2025 --semantic-test [TESTDIR]
+  RCompiler-2025 --semantic-test [TESTDIR]
+  RCompiler-2025 --semantic-test-2 [TESTDIR]
 
 Notes:
   - If INPUT is omitted, source is read from stdin.
   - One of --ast-json or --ast-pretty must be provided.
-    - If --out is omitted, result is printed to stdout.
-    - --semantic-test will run all semantic tests under testcases/semantic-1 by default."
+  - If --out is omitted, result is printed to stdout.
+  - --semantic-test will run all semantic tests under testcases/semantic-1 by default.
+  - --semantic-test-2 will run all semantic tests under testcases/semantic-2 by default."
     );
 }
 
@@ -55,7 +58,10 @@ fn write_output(path: Option<&Path>, content: &str) -> Result<(), String> {
 }
 
 fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
+    let start_time = Instant::now();
+
     // Lex
+    let lex_start = Instant::now();
     let mut lexer = match Lexer::new(src) {
         Ok(lx) => lx,
         Err(e) => {
@@ -70,8 +76,10 @@ fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
             return 1;
         }
     };
+    let lex_duration = lex_start.elapsed();
 
     // Parse
+    let parse_start = Instant::now();
     let mut parser = Parser::new(tokens);
     let nodes = match parser.parse() {
         Ok(n) => n,
@@ -80,8 +88,10 @@ fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
             return 1;
         }
     };
+    let parse_duration = parse_start.elapsed();
 
     // Emit
+    let emit_start = Instant::now();
     if pretty_out {
         let pretty = render_ast_pretty(&nodes);
         if let Err(e) = write_output(out_path, &pretty) {
@@ -102,13 +112,40 @@ fn run_emit(pretty_out: bool, src: String, out_path: Option<&Path>) -> i32 {
             }
         }
     }
+    let emit_duration = emit_start.elapsed();
 
     // Analyzing
+    let analyze_start = Instant::now();
     let mut analyzer = Analyzer::new();
     if let Err(e) = analyzer.analyse_program(&nodes) {
         eprintln!("semantic error: {e}");
         return 1;
     }
+    let analyze_duration = analyze_start.elapsed();
+
+    let total_duration = start_time.elapsed();
+
+    eprintln!("Timing information:");
+    eprintln!(
+        "  Lexing:     {:>8.3}ms",
+        lex_duration.as_secs_f64() * 1000.0
+    );
+    eprintln!(
+        "  Parsing:    {:>8.3}ms",
+        parse_duration.as_secs_f64() * 1000.0
+    );
+    eprintln!(
+        "  Emitting:   {:>8.3}ms",
+        emit_duration.as_secs_f64() * 1000.0
+    );
+    eprintln!(
+        "  Analyzing:  {:>8.3}ms",
+        analyze_duration.as_secs_f64() * 1000.0
+    );
+    eprintln!(
+        "  Total:      {:>8.3}ms",
+        total_duration.as_secs_f64() * 1000.0
+    );
 
     0
 }
@@ -138,6 +175,8 @@ fn compile_semantic(src: &str) -> Result<(), String> {
 }
 
 fn run_semantic_tests(root: Option<String>) -> i32 {
+    let start_time = Instant::now();
+
     let test_root = root.unwrap_or_else(|| "testcases/semantic-1".to_string());
     let path = Path::new(&test_root);
     if !path.exists() {
@@ -266,12 +305,24 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
         for (name, exp, act, msg) in &failed_cases {
             println!("  {name}: expected {exp}, got {act}\n    error: {msg}");
         }
+        let total_duration = start_time.elapsed();
+        eprintln!(
+            "Total test time: {:.3}ms",
+            total_duration.as_secs_f64() * 1000.0
+        );
         return 1;
     }
+    let total_duration = start_time.elapsed();
+    eprintln!(
+        "Total test time: {:.3}ms",
+        total_duration.as_secs_f64() * 1000.0
+    );
     0
 }
 
 fn main() {
+    let overall_start = Instant::now();
+
     let mut args = env::args().skip(1);
     let Some(flag) = args.next() else {
         print_usage();
@@ -281,6 +332,25 @@ fn main() {
     if flag == "--semantic-test" {
         let maybe_dir = args.next();
         let code = run_semantic_tests(maybe_dir);
+        let overall_duration = overall_start.elapsed();
+        eprintln!(
+            "Overall execution time: {:.3}ms",
+            overall_duration.as_secs_f64() * 1000.0
+        );
+        if code != 0 { /* failure already reported */ }
+        return;
+    }
+
+    if flag == "--semantic-test-2" {
+        let maybe_dir = args
+            .next()
+            .or_else(|| Some("testcases/semantic-2".to_string()));
+        let code = run_semantic_tests(maybe_dir);
+        let overall_duration = overall_start.elapsed();
+        eprintln!(
+            "Overall execution time: {:.3}ms",
+            overall_duration.as_secs_f64() * 1000.0
+        );
         if code != 0 { /* failure already reported */ }
         return;
     }
@@ -332,6 +402,11 @@ fn main() {
     };
 
     let code = run_emit(pretty_flag, src, out_path.as_deref());
+    let overall_duration = overall_start.elapsed();
+    eprintln!(
+        "Overall execution time: {:.3}ms",
+        overall_duration.as_secs_f64() * 1000.0
+    );
     if code != 0 {
         // non-zero exit code path (no process::exit to preserve Drops)
     }

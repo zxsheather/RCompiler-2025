@@ -154,7 +154,7 @@ fn let_and_assign_statements() {
 
 #[test]
 fn if_else_expression() {
-    let nodes = parse_nodes("if 1 < 2 { 1 } else { 2 };");
+    let nodes = parse_nodes("if (1 < 2) { 1 } else { 2 };");
     assert_eq!(nodes.len(), 1);
     assert!(matches!(
         nodes[0],

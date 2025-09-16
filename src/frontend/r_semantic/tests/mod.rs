@@ -55,7 +55,7 @@ fn call_wrong_arg_type() {
 
 #[test]
 fn if_branch_type_mismatch() {
-    let src = r#"fn f(a: bool) -> i32 { if a { 1 } else { true } }"#;
+    let src = r#"fn f(a: bool) -> i32 { if (a) { 1 } else { true } }"#;
     let err = analyze_src(src).unwrap_err();
     // println!("Error: {err}");
     assert!(err.contains("Mismatched branch types"), "err: {err}");
@@ -774,7 +774,7 @@ fn if_then_else_assigns_ok() {
     let src = r#"
         fn main() {
             let mut flag: bool = true;
-            if flag { flag = false; } else { flag = true; }
+            if (flag) { flag = false; } else { flag = true; }
         }
     "#;
     assert!(analyze_src(src).is_ok());
@@ -796,7 +796,7 @@ fn return_early_in_if_branch_ok() {
     // then branch returns early => else branch type determines whole if expression
     let src = r#"
         fn f(b: bool) -> i32 {
-            if b { return 1; } else { 2 }
+            if (b) { return 1; } else { 2 }
         }
     "#;
     match analyze_src(src) {
@@ -809,7 +809,7 @@ fn return_early_in_if_branch_ok() {
 fn return_early_in_else_branch_ok() {
     let src = r#"
         fn f(b: bool) -> i32 {
-            if b { 2 } else { return 1; }
+            if (b) { 2 } else { return 1; }
         }
     "#;
     assert!(analyze_src(src).is_ok());
@@ -819,7 +819,7 @@ fn return_early_in_else_branch_ok() {
 fn both_branches_return_ok() {
     let src = r#"
         fn f(b: bool) -> i32 {
-            if b { return 1; } else { return 2; }
+            if (b) { return 1; } else { return 2; }
         }
     "#; // function body diverges after if (both branches return) -> accepted
     assert!(analyze_src(src).is_ok());
@@ -836,7 +836,7 @@ fn return_with_value_type_mismatch_function_decl_error() {
 fn tail_expression_unified_with_never_ok() {
     let src = r#"
         fn f(b: bool) -> i32 {
-            if b { return 1; } else { 3 }
+            if (b) { return 1; } else { 3 }
         }
     "#;
     assert!(analyze_src(src).is_ok());
@@ -846,7 +846,7 @@ fn tail_expression_unified_with_never_ok() {
 fn nested_if_with_return_unification_ok() {
     let src = r#"
         fn f(a: bool, b: bool) -> i32 {
-            if a { if b { return 1; } else { return 2; } } else { 5 }
+            if (a) { if (b) { return 1; } else { return 2; } } else { 5 }
         }
     "#;
     assert!(analyze_src(src).is_ok());
@@ -876,7 +876,7 @@ fn block_trailing_semicolon_discards_value_ok() {
 #[test]
 fn block_last_statement_diverging_propagates_never_ok() {
     // Both branches return; last statement is if-expression whose type is Never, so block type is Never
-    let src = r#"fn f(b: bool) -> i32 { if b { return 1; } else { return 2; } }"#;
+    let src = r#"fn f(b: bool) -> i32 { if (b) { return 1; } else { return 2; } }"#;
     match analyze_src(src) {
         Ok(_) => {}
         Err(e) => panic!("unexpected error: {e}"),
@@ -887,13 +887,13 @@ fn block_last_statement_diverging_propagates_never_ok() {
 
 #[test]
 fn while_loop_basic_ok() {
-    let src = r#"fn main() { let mut i: i32 = 0; while i < 3 { i = i + 1; } }"#;
+    let src = r#"fn main() { let mut i: i32 = 0; while (i < 3) { i = i + 1; } }"#;
     assert!(analyze_src(src).is_ok());
 }
 
 #[test]
 fn loop_with_break_value_ok() {
-    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break i; } i = i + 1; }; }"#;
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if (i == 3) { break i; } i = i + 1; }; }"#;
     assert!(analyze_src(src).is_ok());
 }
 
@@ -906,14 +906,14 @@ fn loop_with_unreachable_inconsistent_break_types_ok() {
 
 #[test]
 fn loop_with_inconsistent_break_types_error() {
-    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if i == 3 { break true } else { break 1 } }; }"#;
+    let src = r#"fn main() { let mut i: i32 = 0; let v: i32 = loop { if (i == 3) { break true } else { break 1 } }; }"#;
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("type mismatch"), "err: {err}");
 }
 
 #[test]
 fn while_break_with_value_error() {
-    let src = r#"fn main() { while true { break 1; } }"#;
+    let src = r#"fn main() { while (true) { break 1; } }"#;
     let err = analyze_src(src).unwrap_err();
     assert!(err.contains("break with value"), "err: {err}");
 }

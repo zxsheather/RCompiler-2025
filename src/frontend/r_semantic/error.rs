@@ -321,4 +321,21 @@ pub enum SemanticError {
 
     #[error("Invalid main function signature at line {line}, column {column}")]
     MainFunctionSignatureInvalid { line: usize, column: usize },
+
+    #[error("Unknown enum '{name}' at line {line}, column {column}")]
+    UnknownEnum {
+        name: String,
+        line: usize,
+        column: usize,
+    },
+
+    #[error(
+        "Unknown enum variant '{variant}' for enum '{enum_name}' at line {line}, column {column}"
+    )]
+    UnknownEnumVariant {
+        variant: String,
+        enum_name: String,
+        line: usize,
+        column: usize,
+    },
 }
