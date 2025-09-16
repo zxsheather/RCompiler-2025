@@ -560,7 +560,7 @@ impl Parser {
                     member: member,
                 })
             }
-            TokenType::Identifier => {
+            TokenType::Identifier | TokenType::SelfUpper => {
                 let tok = self.current_token().clone();
                 self.advance();
 

@@ -177,6 +177,7 @@ pub struct Analyzer {
     pub globe: Globe,
     current_return_type: Option<RxType>,
     loop_stack: Vec<LoopContext>,
+    current_struct: Option<String>,
 }
 
 pub struct LoopContext {
@@ -190,6 +191,7 @@ impl Analyzer {
             globe: Globe::default(),
             current_return_type: None,
             loop_stack: Vec::new(),
+            current_struct: None,
         }
     }
 
@@ -324,9 +326,11 @@ impl Analyzer {
                 }
 
                 AstNode::Impl(i) => {
+                    self.current_struct = Some(i.name.lexeme.clone());
                     for m in i.methods.iter() {
                         self.analyse_function(m)?;
                     }
+                    self.current_struct = None;
                 }
 
                 AstNode::Statement(stmt) => {
@@ -413,6 +417,7 @@ impl Analyzer {
 
     fn analyse_impl_struct(&mut self, impl_node: &ImplNode) -> SemanticResult<()> {
         let st_name = impl_node.name.lexeme.clone();
+        self.current_struct = Some(st_name.clone());
         if !self.globe.structs.contains_key(&st_name) {
             return Err(SemanticError::UnknownStruct {
                 name: st_name,
@@ -501,6 +506,7 @@ impl Analyzer {
                 );
             }
         }
+        self.current_struct = None;
         Ok(())
     }
 
@@ -520,6 +526,8 @@ impl Analyzer {
                 column: it.type_name.position.column,
             });
         }
+
+        self.current_struct = Some(it.type_name.lexeme.clone());
 
         let mut methods = HashMap::new();
         // Currently only support struct.method
@@ -641,6 +649,8 @@ impl Analyzer {
                 .methods
                 .insert((it.type_name.lexeme.clone(), name), sig);
         }
+
+        self.current_struct = None;
 
         Ok(())
     }
@@ -1516,7 +1526,19 @@ impl Analyzer {
     fn analyse_call(&mut self, c: &CallExprNode) -> SemanticResult<RxType> {
         match &*c.function {
             ExpressionNode::StaticMember(sm) => {
-                let st = sm.type_name.lexeme.clone();
+                let st = if matches!(sm.type_name.token_type, TokenType::SelfUpper) {
+                    if let Some(current_struct) = &self.current_struct {
+                        current_struct.clone()
+                    } else {
+                        return Err(SemanticError::Generic {
+                            msg: "Self:: used outside struct".to_string(),
+                            line: sm.type_name.position.line,
+                            column: sm.type_name.position.column,
+                        });
+                    }
+                } else {
+                    sm.type_name.lexeme.clone()
+                };
                 let line = sm.type_name.position.line;
                 let column = sm.type_name.position.column;
                 if !self.globe.structs.contains_key(&st) {

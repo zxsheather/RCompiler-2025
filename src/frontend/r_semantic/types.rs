@@ -85,6 +85,11 @@ impl RxType {
         matches!(self, RxType::Never)
     }
 
+    // Unify two types, returning the unified type if possible
+    // e.g., unify(int_literal, int) => int
+    //       unify([T; n], [T]) => [T; n]
+    //       unify(&T, &mut T) => &T
+    //       unify(never, T) => T
     pub fn unify(a: &RxType, b: &RxType) -> Option<RxType> {
         if a.is_never() {
             return Some(b.clone());
@@ -98,11 +103,17 @@ impl RxType {
 
             (RxType::IntLiteral, t) if t.is_concrete_int() => Some(t.clone()),
             (t, RxType::IntLiteral) if t.is_concrete_int() => Some(t.clone()),
-            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a == size_b => {
+            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a == size_b || size_b.is_none() => {
                 let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
                     return None;
                 };
                 Some(RxType::Array(Box::new(new_ty), *size_a))
+            }
+            (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a.is_none() => {
+                let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
+                    return None;
+                };
+                Some(RxType::Array(Box::new(new_ty), *size_b))
             }
             (RxType::Ref(inner_a, mut_a), RxType::Ref(inner_b, mut_b)) => {
                 let Some(new_ty) = RxType::unify(&inner_a, &inner_b) else {
