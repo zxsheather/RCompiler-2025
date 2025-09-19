@@ -185,7 +185,7 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
     }
 
     // Helper to run one case directory
-    fn run_case(case_dir: &Path) -> Option<(String, i32, i32, String)> {
+    fn run_case(case_dir: &Path) -> (String, i32, i32, Option<String>, bool) {
         let mut rx_file: Option<PathBuf> = None;
         let mut expected_exit: Option<i32> = None;
         if let Ok(files) = fs::read_dir(case_dir) {
@@ -208,31 +208,38 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
                 }
             }
         }
-        let rx_path = rx_file?;
+        let case_name = case_dir.file_name().unwrap().to_string_lossy().to_string();
+        let Some(rx_path) = rx_file else {
+            return (
+                case_name,
+                0,
+                -999,
+                Some("no rx file found".to_string()),
+                false,
+            );
+        };
         let expected = expected_exit.unwrap_or(0);
         let src = match fs::read_to_string(&rx_path) {
             Ok(s) => s,
             Err(_) => {
-                return Some((
-                    case_dir.file_name().unwrap().to_string_lossy().to_string(),
+                return (
+                    case_name,
                     expected,
                     -999,
-                    "read source failed".to_string(),
-                ));
+                    Some("read source failed".to_string()),
+                    false,
+                );
             }
         };
         let res = compile_semantic(&src);
         let actual_std = if res.is_ok() { 0 } else { -1 };
-        if actual_std == expected {
+        let passed = actual_std == expected;
+        let error_msg = if passed {
             None
         } else {
-            Some((
-                case_dir.file_name().unwrap().to_string_lossy().to_string(),
-                expected,
-                actual_std,
-                res.err().unwrap_or_else(|| "<unknown error>".to_string()),
-            ))
-        }
+            res.err().or_else(|| Some("<unknown error>".to_string()))
+        };
+        (case_name, expected, actual_std, error_msg, passed)
     }
 
     // Decide whether path itself is a single case.
@@ -266,13 +273,21 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
     let mut total = 0usize;
     let mut passed = 0usize;
     let mut failed_cases: Vec<(String, i32, i32, String)> = Vec::new();
+    let mut passed_cases: Vec<String> = Vec::new();
 
     if is_single_case {
         total = 1;
-        if let Some(fail) = run_case(path) {
-            failed_cases.push(fail);
-        } else {
+        let (name, expected, actual, error_msg, success) = run_case(path);
+        if success {
             passed = 1;
+            passed_cases.push(name);
+        } else {
+            failed_cases.push((
+                name,
+                expected,
+                actual,
+                error_msg.unwrap_or_else(|| "<unknown error>".to_string()),
+            ));
         }
     } else {
         let entries = match fs::read_dir(path) {
@@ -290,20 +305,36 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
             if !md.is_dir() {
                 continue;
             }
-            total += 1; // count first; adjust inside run_case
-            if let Some(fail) = run_case(&entry.path()) {
-                failed_cases.push(fail);
-            } else {
+            total += 1;
+            let (name, expected, actual, error_msg, success) = run_case(&entry.path());
+            if success {
                 passed += 1;
+                passed_cases.push(name);
+            } else {
+                failed_cases.push((
+                    name,
+                    expected,
+                    actual,
+                    error_msg.unwrap_or_else(|| "<unknown error>".to_string()),
+                ));
             }
         }
     }
 
     println!("Semantic tests: {passed}/{total} passed");
+
+    if !passed_cases.is_empty() {
+        println!("Passed cases:");
+        for name in &passed_cases {
+            println!("  ✓ {name}");
+        }
+        println!();
+    }
+
     if !failed_cases.is_empty() {
         println!("Failed cases:");
         for (name, exp, act, msg) in &failed_cases {
-            println!("  {name}: expected {exp}, got {act}\n    error: {msg}");
+            println!("  ✗ {name}: expected {exp}, got {act}\n    error: {msg}");
         }
         let total_duration = start_time.elapsed();
         eprintln!(

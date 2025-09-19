@@ -6,7 +6,9 @@ use crate::frontend::{
         ArrayLiteralNode, BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode, UnaryExprNode,
     },
     r_semantic::{
+        analyzer::Globe,
         error::{SemanticError, SemanticResult},
+        tyctxt::TypeContext,
         types::{RxType, RxValue},
     },
 };
@@ -17,23 +19,30 @@ impl ConstFolder {
     pub fn calc_expr(
         expr: &ExpressionNode,
         report_tok: &Token,
-        consts: &HashMap<String, (RxType, RxValue)>,
+        globe: &Globe,
+        type_context: &mut TypeContext,
     ) -> SemanticResult<(RxType, RxValue)> {
         match expr {
-            ExpressionNode::IntegerLiteral(token) => Self::parse_int_literal(token),
-            ExpressionNode::StringLiteral(token) => {
+            ExpressionNode::IntegerLiteral(token, node_id) => {
+                let res = Self::parse_int_literal(token)?;
+                type_context.set_type(*node_id, res.0.clone());
+                Ok(res)
+            }
+            ExpressionNode::StringLiteral(token, node_id) => {
                 let s = token.lexeme.trim_matches('"').to_string();
+                type_context.set_type(*node_id, RxType::String);
                 Ok((RxType::String, RxValue::String(s)))
             }
-            ExpressionNode::BoolLiteral(token) => {
+            ExpressionNode::BoolLiteral(token, node_id) => {
                 let v = match token.token_type {
                     TokenType::True => true,
                     TokenType::False => false,
                     _ => token.lexeme == "true",
                 };
+                type_context.set_type(*node_id, RxType::Bool);
                 Ok((RxType::Bool, RxValue::Bool(v)))
             }
-            ExpressionNode::CharLiteral(token) => {
+            ExpressionNode::CharLiteral(token, node_id) => {
                 // Assume lexeme like 'a' or '\n'
                 let ch = token
                     .lexeme
@@ -42,14 +51,15 @@ impl ConstFolder {
                     .chars()
                     .next()
                     .unwrap_or('\0');
+                type_context.set_type(*node_id, RxType::Char);
                 Ok((RxType::Char, RxValue::Char(ch)))
             }
             ExpressionNode::ArrayLiteral(node) => match node {
-                ArrayLiteralNode::Elements { elements } => {
+                ArrayLiteralNode::Elements { elements, node_id } => {
                     let mut vals = Vec::new();
                     let mut elem_type = RxType::Never;
                     for elem in elements {
-                        let (ty, val) = Self::calc_expr(&elem, report_tok, consts)?;
+                        let (ty, val) = Self::calc_expr(&elem, report_tok, globe, type_context)?;
                         if let Some(unified_ty) = RxType::unify(&elem_type, &ty) {
                             elem_type = unified_ty;
                             vals.push(val);
@@ -61,21 +71,25 @@ impl ConstFolder {
                             });
                         }
                     }
-                    Ok((
-                        RxType::Array(Box::new(elem_type.clone()), Some(vals.len())),
-                        RxValue::Array(elem_type, vals.len(), vals),
-                    ))
+                    let ty = RxType::Array(Box::new(elem_type.clone()), Some(vals.len()));
+                    type_context.set_type(*node_id, ty.clone());
+                    Ok((ty, RxValue::Array(elem_type, vals.len(), vals)))
                 }
-                ArrayLiteralNode::Repeated { element, size } => {
-                    let (elem_ty, elem_val) = Self::calc_expr(&element, report_tok, consts)?;
-                    let (size_ty, size_val) = Self::calc_expr(&size, report_tok, consts)?;
+                ArrayLiteralNode::Repeated {
+                    element,
+                    size,
+                    node_id,
+                } => {
+                    let (elem_ty, elem_val) =
+                        Self::calc_expr(&element, report_tok, globe, type_context)?;
+                    let (size_ty, size_val) =
+                        Self::calc_expr(&size, report_tok, globe, type_context)?;
                     if RxType::unify(&size_ty, &RxType::USize).is_some() {
                         let size_usize = size_val.as_usize()?;
                         let vals = vec![elem_val; size_usize];
-                        Ok((
-                            RxType::Array(Box::new(elem_ty.clone()), Some(size_usize)),
-                            RxValue::Array(elem_ty, size_usize, vals),
-                        ))
+                        let ty = RxType::Array(Box::new(elem_ty.clone()), Some(size_usize));
+                        type_context.set_type(*node_id, ty.clone());
+                        Ok((ty, RxValue::Array(elem_ty, size_usize, vals)))
                     } else {
                         Err(SemanticError::InvalidConstExpr {
                             expr: "array size must be usize".to_string(),
@@ -85,8 +99,9 @@ impl ConstFolder {
                     }
                 }
             },
-            ExpressionNode::Identifier(token) => {
-                if let Some(val) = consts.get(&token.lexeme) {
+            ExpressionNode::Identifier(token, node_id) => {
+                if let Some(val) = globe.lookup_const(&token.lexeme) {
+                    type_context.set_type(*node_id, val.clone().0);
                     Ok(val.clone())
                 } else {
                     Err(SemanticError::Generic {
@@ -96,15 +111,24 @@ impl ConstFolder {
                     })
                 }
             }
-            ExpressionNode::Unary(UnaryExprNode { operator, operand }) => {
-                let (ty, val) = Self::calc_expr(operand, report_tok, consts)?;
+            ExpressionNode::Unary(UnaryExprNode {
+                operator,
+                operand,
+                node_id,
+            }) => {
+                let (ty, val) = Self::calc_expr(operand, report_tok, globe, type_context)?;
                 match operator.token_type {
                     TokenType::Minus => match (ty, val) {
-                        (RxType::I32, RxValue::I32(v)) => Ok((RxType::I32, RxValue::I32(-v))),
+                        (RxType::I32, RxValue::I32(v)) => {
+                            type_context.set_type(*node_id, RxType::I32);
+                            Ok((RxType::I32, RxValue::I32(-v)))
+                        }
                         (RxType::ISize, RxValue::ISize(v)) => {
+                            type_context.set_type(*node_id, RxType::ISize);
                             Ok((RxType::ISize, RxValue::ISize(-v)))
                         }
                         (RxType::IntLiteral, RxValue::IntLiteral(v)) => {
+                            type_context.set_type(*node_id, RxType::IntLiteral);
                             Ok((RxType::IntLiteral, RxValue::IntLiteral(-v)))
                         }
                         (RxType::U32, RxValue::U32(_)) | (RxType::USize, RxValue::USize(_)) => {
@@ -123,7 +147,10 @@ impl ConstFolder {
                         }),
                     },
                     TokenType::Not => match (ty, val) {
-                        (RxType::Bool, RxValue::Bool(v)) => Ok((RxType::Bool, RxValue::Bool(!v))),
+                        (RxType::Bool, RxValue::Bool(v)) => {
+                            type_context.set_type(*node_id, RxType::Bool);
+                            Ok((RxType::Bool, RxValue::Bool(!v)))
+                        }
                         _ => Err(SemanticError::InvalidUnaryOperandType {
                             expected_type: "bool".to_string(),
                             found_type: "non-bool".to_string(),
@@ -142,10 +169,13 @@ impl ConstFolder {
                 left_operand,
                 operator,
                 right_operand,
+                node_id,
             }) => {
-                let (lty, lval) = Self::calc_expr(left_operand, report_tok, consts)?;
-                let (rty, rval) = Self::calc_expr(right_operand, report_tok, consts)?;
-                Self::eval_binary(lty, lval, rty, rval, operator, report_tok)
+                let (lty, lval) = Self::calc_expr(left_operand, report_tok, globe, type_context)?;
+                let (rty, rval) = Self::calc_expr(right_operand, report_tok, globe, type_context)?;
+                let res = Self::eval_binary(lty, lval, rty, rval, operator, report_tok)?;
+                type_context.set_type(*node_id, res.0.clone());
+                Ok(res)
             }
             other => Err(SemanticError::InvalidConstExpr {
                 expr: format!("{:?}", other),
