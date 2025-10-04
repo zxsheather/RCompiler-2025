@@ -221,4 +221,32 @@ mod tests {
         assert_eq!(tokens[3].token_type, TokenType::Lt);
         assert_eq!(tokens[3].lexeme, "<");
     }
+
+    #[test]
+    fn test_unicode_string_literal() {
+        let mut lexer = Lexer::new(r#""你好，世界" fn"#.to_string()).unwrap();
+        let tokens = lexer.tokenize().unwrap();
+
+        assert_eq!(tokens[0].token_type, TokenType::StringLiteral);
+        assert_eq!(tokens[0].lexeme, r#""你好，世界""#);
+        assert_eq!(tokens[1].token_type, TokenType::Fn);
+        assert_eq!(tokens[1].position.line, 1);
+        // Column should account for UTF-8 string width (quote + 5 chars + quote + space)
+        assert_eq!(tokens[1].position.column, 9);
+        assert_eq!(tokens.last().unwrap().token_type, TokenType::Eof);
+    }
+
+    #[test]
+    fn test_unicode_comment_and_identifier_position() {
+        let mut lexer = Lexer::new("// 注释包含Unicode\nfn main() {}".to_string()).unwrap();
+        let tokens = lexer.tokenize().unwrap();
+
+        assert_eq!(tokens[0].token_type, TokenType::Fn);
+        assert_eq!(tokens[0].position.line, 2);
+        assert_eq!(tokens[0].position.column, 1);
+        assert_eq!(tokens[1].token_type, TokenType::Identifier);
+        assert_eq!(tokens[1].lexeme, "main");
+        assert_eq!(tokens[1].position.line, 2);
+        assert_eq!(tokens[1].position.column, 4);
+    }
 }

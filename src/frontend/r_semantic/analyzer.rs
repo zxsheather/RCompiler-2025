@@ -293,12 +293,12 @@ impl Analyzer {
             match node {
                 AstNode::Function(func) => {
                     let sig = self.extract_sig(func)?;
-                    let _ = self.globe.declare_fn(
+                    self.globe.declare_fn(
                         sig.token.lexeme.clone(),
                         sig.param_types,
                         sig.return_type,
                         sig.token,
-                    );
+                    )?;
                 }
                 AstNode::Struct(sd) => {
                     let mut field_map = HashMap::new();
@@ -960,22 +960,49 @@ impl Analyzer {
                 }
             }
             ExpressionNode::IntegerLiteral(token, node_id) => {
-                if token.lexeme.contains("isize") {
+                let ty = if token.lexeme.contains("isize") {
                     self.type_context.set_type(*node_id, RxType::ISize);
-                    Ok(RxType::ISize)
+                    RxType::ISize
                 } else if token.lexeme.contains("usize") {
                     self.type_context.set_type(*node_id, RxType::USize);
-                    Ok(RxType::USize)
+                    RxType::USize
                 } else if token.lexeme.contains("u32") {
                     self.type_context.set_type(*node_id, RxType::U32);
-                    Ok(RxType::U32)
+                    RxType::U32
                 } else if token.lexeme.contains("i32") {
                     self.type_context.set_type(*node_id, RxType::I32);
-                    Ok(RxType::I32)
+                    RxType::I32
                 } else {
                     self.type_context.set_type(*node_id, RxType::IntLiteral);
-                    Ok(RxType::IntLiteral)
+                    RxType::IntLiteral
+                };
+                let mut clean = token.lexeme.replace('_', "");
+                for suf in ["isize", "usize", "u32", "i32"] {
+                    if clean.ends_with(suf) {
+                        clean = clean.trim_end_matches(suf).to_string();
+                        break;
+                    }
                 }
+                let (tp, _) = match ty {
+                    RxType::I32 => clean.parse::<i32>().map(|v| (RxType::I32, RxValue::I32(v))),
+                    RxType::U32 => clean.parse::<u32>().map(|v| (RxType::U32, RxValue::U32(v))),
+                    RxType::ISize => clean
+                        .parse::<isize>()
+                        .map(|v| (RxType::ISize, RxValue::ISize(v))),
+                    RxType::USize => clean
+                        .parse::<usize>()
+                        .map(|v| (RxType::USize, RxValue::USize(v))),
+                    RxType::IntLiteral => clean
+                        .parse::<i32>()
+                        .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v as i64))),
+                    _ => unreachable!(),
+                }
+                .map_err(|_| SemanticError::InvalidConstExpr {
+                    expr: token.lexeme.clone(),
+                    line: token.position.line,
+                    column: token.position.column,
+                })?;
+                Ok(tp)
             }
             ExpressionNode::StringLiteral(_, node_id) => {
                 self.type_context

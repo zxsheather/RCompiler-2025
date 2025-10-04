@@ -185,7 +185,7 @@ impl ConstFolder {
         }
     }
 
-    fn parse_int_literal(token: &Token) -> SemanticResult<(RxType, RxValue)> {
+    pub fn parse_int_literal(token: &Token) -> SemanticResult<(RxType, RxValue)> {
         let ty = if token.lexeme.contains("isize") {
             RxType::ISize
         } else if token.lexeme.contains("usize") {
@@ -214,8 +214,8 @@ impl ConstFolder {
                 .parse::<usize>()
                 .map(|v| (RxType::USize, RxValue::USize(v))),
             RxType::IntLiteral => clean
-                .parse::<i64>()
-                .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v))),
+                .parse::<i32>()
+                .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v as i64))),
             _ => unreachable!(),
         }
         .map_err(|_| SemanticError::InvalidConstExpr {

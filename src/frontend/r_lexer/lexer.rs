@@ -227,13 +227,46 @@ impl Lexer {
         Ok(tokens)
     }
 
+    fn current_slice(&self) -> &str {
+        if self.pos.index >= self.input.len() {
+            ""
+        } else {
+            &self.input[self.pos.index..]
+        }
+    }
+
+    fn current_char_info(&self) -> Option<(char, usize)> {
+        self.current_slice()
+            .chars()
+            .next()
+            .map(|ch| (ch, ch.len_utf8()))
+    }
+
+    fn peek_char(&self, offset: usize) -> Option<char> {
+        self.current_slice().chars().nth(offset)
+    }
+
+    fn advance_by_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            let len = ch.len_utf8();
+            self.pos.index += len;
+            if ch == '\n' {
+                self.pos.line += 1;
+                self.pos.column = 1;
+            } else {
+                self.pos.column += 1;
+            }
+        }
+    }
+
     pub fn skip_whitespace_and_comments(&mut self) -> LexResult<()> {
         loop {
-            if self.current_char().is_whitespace() {
+            let ch = self.current_char();
+            if ch.is_whitespace() {
                 self.advance();
-            } else if self.current_char() == '/' && self.peek() == '/' {
+            } else if ch == '/' && self.peek() == '/' {
                 self.lex_sin_line_comment()?;
-            } else if self.current_char() == '/' && self.peek() == '*' {
+            } else if ch == '/' && self.peek() == '*' {
                 self.lex_mul_lines_comment()?;
             } else {
                 break;
@@ -245,10 +278,12 @@ impl Lexer {
     pub fn lex_sin_line_comment(&mut self) -> LexResult<()> {
         self.advance();
         self.advance();
-        while !self.is_end() && self.peek() != '\n' {
+        while !self.is_end() && self.current_char() != '\n' {
             self.advance();
         }
-        self.advance();
+        if !self.is_end() {
+            self.advance();
+        }
         Ok(())
     }
 
@@ -285,24 +320,23 @@ impl Lexer {
     }
 
     pub fn advance(&mut self) {
-        self.pos.index += 1;
-        self.pos.column += 1;
-        if self.current_char() == '\n' {
-            self.pos.index += 1;
-            self.pos.line += 1;
-            self.pos.column = 1;
+        if let Some((ch, len)) = self.current_char_info() {
+            self.pos.index += len;
+            if ch == '\n' {
+                self.pos.line += 1;
+                self.pos.column = 1;
+            } else {
+                self.pos.column += 1;
+            }
         }
     }
 
     pub fn current_char(&self) -> char {
-        self.input[self.pos.index..].chars().next().unwrap_or('\0')
+        self.current_char_info().map(|(ch, _)| ch).unwrap_or('\0')
     }
 
     pub fn peek(&self) -> char {
-        self.input[self.pos.index + 1..]
-            .chars()
-            .next()
-            .unwrap_or('\0')
+        self.peek_char(1).unwrap_or('\0')
     }
 
     pub fn is_end(&self) -> bool {
@@ -310,27 +344,29 @@ impl Lexer {
     }
 
     pub fn next_token(&mut self) -> LexResult<Token> {
-        let remaining = &self.input[self.pos.index..];
         let mut match_token: Option<Token> = None;
-        for rule in &self.rules {
-            if let Some(mat) = rule.pattern.find(remaining) {
-                let lexeme = mat.as_str().to_string();
-                let position = self.pos.clone();
-                self.pos.index += lexeme.len();
-                self.pos.column += lexeme.len();
-                if self.current_char() == '\n' {
-                    self.pos.index += 1;
-                    self.pos.line += 1;
-                    self.pos.column = 1;
-                }
-                match_token = Some(Token {
-                    token_type: rule.token_type,
-                    lexeme,
-                    position,
-                });
+        let mut matched: Option<(TokenType, String)> = None;
 
-                break;
-            }
+        for rule in &self.rules {
+            let lexeme = {
+                let remaining = &self.input[self.pos.index..];
+                match rule.pattern.find(remaining) {
+                    Some(mat) => mat.as_str().to_string(),
+                    None => continue,
+                }
+            };
+            matched = Some((rule.token_type, lexeme));
+            break;
+        }
+
+        if let Some((token_type, lexeme)) = matched {
+            let position = self.pos.clone();
+            self.advance_by_str(&lexeme);
+            match_token = Some(Token {
+                token_type,
+                lexeme,
+                position,
+            });
         }
 
         if let Some(token) = match_token {
