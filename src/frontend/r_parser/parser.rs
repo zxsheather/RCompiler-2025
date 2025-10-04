@@ -6,16 +6,22 @@ use crate::frontend::{
         ast::*,
         error::{ParseError, ParseResult},
     },
+    r_semantic::tyctxt::TypeContext,
 };
 
 pub struct Parser {
     tokens: Vec<Token>,
+    type_context: TypeContext,
     index: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, index: 0 }
+        Self {
+            tokens,
+            type_context: TypeContext::new(),
+            index: 0,
+        }
     }
 
     pub fn parse(&mut self) -> ParseResult<Vec<AstNode>> {
@@ -76,18 +82,22 @@ impl Parser {
                 None
             };
             self.expect_type(&TokenType::Semicolon)?;
+            let node_id = self.type_context.assign_node_id();
             methods.push(TraitMethodSigNode {
                 fn_token,
                 name: method_name,
                 param_list: params,
                 return_type,
+                node_id,
             });
         }
         self.expect_type(&TokenType::RBrace)?;
+        let trait_node_id = self.type_context.assign_node_id();
         Ok(TraitDeclNode {
             trait_token,
             name,
             methods,
+            node_id: trait_node_id,
         })
     }
 
@@ -129,11 +139,13 @@ impl Parser {
             methods.push(method);
         }
         self.expect_type(&TokenType::RBrace)?;
+        let node_id = self.type_context.assign_node_id();
         Ok(ImplTraitBlockNode {
             impl_token,
             trait_name,
             for_token,
             type_name,
+            node_id,
             methods,
         })
     }
@@ -148,17 +160,23 @@ impl Parser {
                 break;
             }
             let variant = self.expect_type(&TokenType::Identifier)?;
-            variants.push(EnumVariantNode { name: variant });
+            let node_id = self.type_context.assign_node_id();
+            variants.push(EnumVariantNode {
+                name: variant,
+                node_id,
+            });
             if !self.check_type(&TokenType::Comma) {
                 break;
             }
             self.advance();
         }
         self.expect_type(&TokenType::RBrace)?;
+        let node_id = self.type_context.assign_node_id();
         Ok(EnumDeclNode {
             enum_token,
             name,
             variants,
+            node_id,
         })
     }
 
@@ -169,11 +187,13 @@ impl Parser {
         let type_annotation = self.parse_type()?;
         self.expect_type(&TokenType::Eq)?;
         let value = self.parse_expression()?;
+        let node_id = self.type_context.assign_node_id();
         Ok(ConstItemNode {
             const_token,
             name,
             type_annotation,
             value,
+            node_id,
         })
     }
 
@@ -188,12 +208,14 @@ impl Parser {
             None
         };
         let body = self.parse_block()?;
+        let node_id = self.type_context.assign_node_id();
         Ok(FunctionNode {
             fn_token,
             name,
             param_list,
             return_type,
             body,
+            node_id,
         })
     }
 
@@ -315,8 +337,10 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 if self.check_type(&TokenType::Semicolon) {
                     self.advance();
+                    let node_id = self.type_context.assign_node_id();
                     statements.push(StatementNode::Expression(ExprStatementNode {
                         expression: expr,
+                        node_id,
                     }));
                 } else {
                     final_expr = Some(expr);
@@ -327,7 +351,7 @@ impl Parser {
         self.expect_type(&TokenType::RBrace)?;
         if final_expr.is_none() {
             if let Some(last_stat) = statements.last() {
-                if let StatementNode::Expression(ExprStatementNode { expression }) = last_stat {
+                if let StatementNode::Expression(ExprStatementNode { expression, .. }) = last_stat {
                     if let ExpressionNode::If(_)
                     | ExpressionNode::While(_)
                     | ExpressionNode::Loop(_) = expression
@@ -338,9 +362,11 @@ impl Parser {
                 }
             }
         }
+        let node_id = self.type_context.assign_node_id();
         Ok(BlockNode {
             stats: statements,
             final_expr,
+            node_id,
         })
     }
 
@@ -353,19 +379,24 @@ impl Parser {
             let field_name = self.expect_type(&TokenType::Identifier)?;
             self.expect_type(&TokenType::Colon)?;
             let field_type = self.parse_type()?;
+            let node_id = self.type_context.assign_node_id();
             fields.push(StructFieldNode {
                 name: field_name,
                 type_annotation: field_type,
+                node_id,
             });
+
             if self.check_type(&TokenType::Comma) {
                 self.advance();
             }
         }
         self.expect_type(&TokenType::RBrace)?;
+        let node_id = self.type_context.assign_node_id();
         Ok(StructDeclNode {
             struct_token,
             name,
             fields,
+            node_id,
         })
     }
 
@@ -409,6 +440,7 @@ impl Parser {
                         identifier,
                         type_annotation,
                         value: None,
+                        node_id: self.type_context.assign_node_id(),
                     }));
                 }
 
@@ -422,6 +454,7 @@ impl Parser {
                     identifier,
                     type_annotation,
                     value: Some(value),
+                    node_id: self.type_context.assign_node_id(),
                 }))
             }
             TokenType::Identifier => {
@@ -437,31 +470,47 @@ impl Parser {
                     Ok(StatementNode::Assign(AssignStatementNode {
                         identifier,
                         value,
+                        node_id: self.type_context.assign_node_id(),
                     }))
                 } else {
                     let expression = self.parse_expression()?;
                     self.expect_type(&TokenType::Semicolon)?;
-                    Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                    Ok(StatementNode::Expression(ExprStatementNode {
+                        expression,
+                        node_id: self.type_context.assign_node_id(),
+                    }))
                 }
             }
             TokenType::If => {
                 let expression = self.parse_if_expression()?;
-                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                Ok(StatementNode::Expression(ExprStatementNode {
+                    expression,
+                    node_id: self.type_context.assign_node_id(),
+                }))
             }
             TokenType::While => {
                 let expression = self.parse_while_expression()?;
-                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                Ok(StatementNode::Expression(ExprStatementNode {
+                    expression,
+                    node_id: self.type_context.assign_node_id(),
+                }))
             }
             TokenType::Loop => {
                 let expression = self.parse_loop_expression()?;
-                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                Ok(StatementNode::Expression(ExprStatementNode {
+                    expression,
+                    node_id: self.type_context.assign_node_id(),
+                }))
             }
             TokenType::Return => {
                 let expression = self.parse_return_expression()?;
                 if self.check_type(&TokenType::Semicolon) {
                     self.advance();
                 }
-                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                Ok(StatementNode::Expression(ExprStatementNode {
+                    expression,
+                    node_id: self.type_context.assign_node_id(),
+                }))
             }
             TokenType::Const => {
                 let const_item = self.parse_const_item()?;
@@ -475,7 +524,10 @@ impl Parser {
             _ => {
                 let expression = self.parse_expression()?;
                 self.expect_type(&TokenType::Semicolon)?;
-                Ok(StatementNode::Expression(ExprStatementNode { expression }))
+                Ok(StatementNode::Expression(ExprStatementNode {
+                    expression,
+                    node_id: self.type_context.assign_node_id(),
+                }))
             }
         }
     }
@@ -495,6 +547,7 @@ impl Parser {
                 ExpressionNode::Unary(UnaryExprNode {
                     operator: op,
                     operand: Box::new(rhs),
+                    node_id: self.type_context.assign_node_id(),
                 })
             }
             TokenType::And => {
@@ -510,6 +563,7 @@ impl Parser {
                 ExpressionNode::Ref(RefExprNode {
                     mutable,
                     operand: Box::new(rhs),
+                    node_id: self.type_context.assign_node_id(),
                 })
             }
             TokenType::Mul => {
@@ -518,7 +572,11 @@ impl Parser {
                 let operand = self.expect_type(&TokenType::Identifier)?;
                 ExpressionNode::Deref(DerefExprNode {
                     star_token: star,
-                    operand: Box::new(ExpressionNode::Identifier(operand)),
+                    operand: Box::new(ExpressionNode::Identifier(
+                        operand,
+                        self.type_context.assign_node_id(),
+                    )),
+                    node_id: self.type_context.assign_node_id(),
                 })
             }
             TokenType::If => self.parse_if_expression()?,
@@ -538,6 +596,7 @@ impl Parser {
                     self.advance();
                     ExpressionNode::TupleLiteral(TupleLiteralNode {
                         elements: Vec::new(),
+                        node_id: self.type_context.assign_node_id(),
                     })
                 } else {
                     let first_expr = self.parse_expression()?;
@@ -552,7 +611,10 @@ impl Parser {
                             elems.push(expr);
                         }
                         self.expect_type(&TokenType::RParen)?;
-                        ExpressionNode::TupleLiteral(TupleLiteralNode { elements: elems })
+                        ExpressionNode::TupleLiteral(TupleLiteralNode {
+                            elements: elems,
+                            node_id: self.type_context.assign_node_id(),
+                        })
                     } else {
                         self.expect_type(&TokenType::RParen)?;
                         first_expr
@@ -569,6 +631,7 @@ impl Parser {
                 ExpressionNode::StaticMember(StaticMemberExprNode {
                     type_name: tok,
                     member: member,
+                    node_id: self.type_context.assign_node_id(),
                 })
             }
             TokenType::Identifier | TokenType::SelfUpper => {
@@ -581,6 +644,7 @@ impl Parser {
                     ExpressionNode::StaticMember(StaticMemberExprNode {
                         type_name: tok,
                         member: member,
+                        node_id: self.type_context.assign_node_id(),
                     })
                 } else if self.check_type(&TokenType::LBrace) {
                     let is_struct_literal = if let Some(t1) = self.peek_safe() {
@@ -596,28 +660,32 @@ impl Parser {
                     };
                     if is_struct_literal {
                         let fields = self.parse_struct_literal_fields()?;
-                        ExpressionNode::StructLiteral(StructLiteralNode { name: tok, fields })
+                        ExpressionNode::StructLiteral(StructLiteralNode {
+                            name: tok,
+                            fields,
+                            node_id: self.type_context.assign_node_id(),
+                        })
                     } else {
-                        ExpressionNode::Identifier(tok)
+                        ExpressionNode::Identifier(tok, self.type_context.assign_node_id())
                     }
                 } else {
-                    ExpressionNode::Identifier(tok)
+                    ExpressionNode::Identifier(tok, self.type_context.assign_node_id())
                 }
             }
             TokenType::IntegerLiteral => {
                 let tok = self.current_token().clone();
                 self.advance();
-                ExpressionNode::IntegerLiteral(tok)
+                ExpressionNode::IntegerLiteral(tok, self.type_context.assign_node_id())
             }
             TokenType::StringLiteral => {
                 let tok = self.current_token().clone();
                 self.advance();
-                ExpressionNode::StringLiteral(tok)
+                ExpressionNode::StringLiteral(tok, self.type_context.assign_node_id())
             }
             TokenType::CharLiteral => {
                 let tok = self.current_token().clone();
                 self.advance();
-                ExpressionNode::CharLiteral(tok)
+                ExpressionNode::CharLiteral(tok, self.type_context.assign_node_id())
             }
             // TokenType::Underscore => {
             //     let tok = self.current_token().clone();
@@ -627,12 +695,12 @@ impl Parser {
             TokenType::True | TokenType::False => {
                 let tok = self.current_token().clone();
                 self.advance();
-                ExpressionNode::BoolLiteral(tok)
+                ExpressionNode::BoolLiteral(tok, self.type_context.assign_node_id())
             }
             TokenType::SelfLower => {
                 let tok = self.current_token().clone();
                 self.advance();
-                ExpressionNode::Identifier(tok)
+                ExpressionNode::Identifier(tok, self.type_context.assign_node_id())
             }
             _ => {
                 let token = self.current_token();
@@ -650,16 +718,18 @@ impl Parser {
             if self.check_type(&TokenType::LParen) {
                 let args = self.parse_argument_list()?;
                 lhs = match lhs {
-                    ExpressionNode::Member(MemberExprNode { object, field }) => {
+                    ExpressionNode::Member(MemberExprNode { object, field, .. }) => {
                         ExpressionNode::MethodCall(MethodCallExprNode {
                             object: object.clone(),
                             method: field.clone(),
                             args,
+                            node_id: self.type_context.assign_node_id(),
                         })
                     }
                     other => ExpressionNode::Call(CallExprNode {
                         function: Box::new(other),
                         args,
+                        node_id: self.type_context.assign_node_id(),
                     }),
                 };
                 continue;
@@ -672,6 +742,7 @@ impl Parser {
                     expr: Box::new(lhs),
                     as_token,
                     type_name,
+                    node_id: self.type_context.assign_node_id(),
                 }));
                 continue;
             }
@@ -683,6 +754,7 @@ impl Parser {
                 lhs = ExpressionNode::Index(IndexExprNode {
                     array: Box::new(lhs),
                     index: Box::new(index),
+                    node_id: self.type_context.assign_node_id(),
                 });
                 continue;
             }
@@ -693,6 +765,7 @@ impl Parser {
                 lhs = ExpressionNode::Member(MemberExprNode {
                     object: Box::new(lhs),
                     field,
+                    node_id: self.type_context.assign_node_id(),
                 });
                 continue;
             }
@@ -712,6 +785,7 @@ impl Parser {
                 left_operand: Box::new(lhs),
                 operator: op_tok,
                 right_operand: Box::new(rhs),
+                node_id: self.type_context.assign_node_id(),
             });
         }
 
@@ -787,9 +861,13 @@ impl Parser {
                 self.advance();
                 self.parse_expression()?
             } else {
-                ExpressionNode::Identifier(name.clone())
+                ExpressionNode::Identifier(name.clone(), self.type_context.assign_node_id())
             };
-            fields.push(StructLiteralFieldNode { name, value });
+            fields.push(StructLiteralFieldNode {
+                name,
+                value,
+                node_id: self.type_context.assign_node_id(),
+            });
             if self.check_type(&TokenType::Comma) {
                 self.advance();
                 continue;
@@ -840,6 +918,7 @@ impl Parser {
             impl_token,
             name,
             methods,
+            node_id: self.type_context.assign_node_id(),
         })
     }
 
@@ -870,6 +949,7 @@ impl Parser {
             condition,
             then_block,
             else_block,
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -883,6 +963,7 @@ impl Parser {
             while_token,
             condition,
             body,
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -892,6 +973,7 @@ impl Parser {
         Ok(ExpressionNode::Loop(Box::new(LoopExprNode {
             loop_token,
             body,
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -901,7 +983,10 @@ impl Parser {
         loop {
             if self.check_type(&TokenType::RParen) {
                 self.advance();
-                return Ok(ParamListNode { params });
+                return Ok(ParamListNode {
+                    params,
+                    node_id: self.type_context.assign_node_id(),
+                });
             }
             let param = self.parse_param()?;
             params.push(param);
@@ -912,7 +997,10 @@ impl Parser {
             self.expect_type(&TokenType::RParen)?;
             break;
         }
-        Ok(ParamListNode { params })
+        Ok(ParamListNode {
+            params,
+            node_id: self.type_context.assign_node_id(),
+        })
     }
 
     fn parse_param(&mut self) -> ParseResult<ParamNode> {
@@ -933,6 +1021,7 @@ impl Parser {
                 name: self_tok,
                 type_annotation: Some(TypeNode::SelfRef { mutable }),
                 mutable: false,
+                node_id: self.type_context.assign_node_id(),
             });
         }
         let mutable = if self.check_type(&TokenType::Mut) {
@@ -964,6 +1053,7 @@ impl Parser {
             name,
             type_annotation,
             mutable,
+            node_id: self.type_context.assign_node_id(),
         })
     }
 
@@ -974,12 +1064,14 @@ impl Parser {
             return Ok(ExpressionNode::Break(Box::new(BreakExprNode {
                 break_token,
                 value: None,
+                node_id: self.type_context.assign_node_id(),
             })));
         }
         let value = self.parse_expression()?;
         Ok(ExpressionNode::Break(Box::new(BreakExprNode {
             break_token,
             value: Some(value),
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -987,6 +1079,7 @@ impl Parser {
         let continue_token = self.expect_type(&TokenType::Continue)?;
         Ok(ExpressionNode::Continue(Box::new(ContinueExprNode {
             continue_token,
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -996,12 +1089,14 @@ impl Parser {
             return Ok(ExpressionNode::Return(Box::new(ReturnExprNode {
                 return_token,
                 value: None,
+                node_id: self.type_context.assign_node_id(),
             })));
         }
         let value = self.parse_expression()?;
         Ok(ExpressionNode::Return(Box::new(ReturnExprNode {
             return_token,
             value: Some(value),
+            node_id: self.type_context.assign_node_id(),
         })))
     }
 
@@ -1010,7 +1105,10 @@ impl Parser {
         let mut elements = Vec::new();
         if self.check_type(&TokenType::RBracket) {
             self.advance();
-            return Ok(ArrayLiteralNode::Elements { elements });
+            return Ok(ArrayLiteralNode::Elements {
+                elements,
+                node_id: self.type_context.assign_node_id(),
+            });
         }
         // Lookahead for repeat form: <expr> ; <IntegerLiteral> ]
         let first_expr = self.parse_expression()?;
@@ -1021,6 +1119,7 @@ impl Parser {
             return Ok(ArrayLiteralNode::Repeated {
                 element: Box::new(first_expr),
                 size: Box::new(size),
+                node_id: self.type_context.assign_node_id(),
             });
         } else {
             elements.push(first_expr);
@@ -1034,7 +1133,10 @@ impl Parser {
             }
             self.expect_type(&TokenType::RBracket)?;
         }
-        Ok(ArrayLiteralNode::Elements { elements })
+        Ok(ArrayLiteralNode::Elements {
+            elements,
+            node_id: self.type_context.assign_node_id(),
+        })
     }
 
     fn is_end(&self) -> bool {

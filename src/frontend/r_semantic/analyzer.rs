@@ -14,6 +14,7 @@ use crate::frontend::{
         built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
         const_folder::ConstFolder,
         error::{SemanticError, SemanticResult},
+        tyctxt::TypeContext,
         types::{RxType, RxValue},
     },
 };
@@ -29,6 +30,8 @@ pub struct Symbol {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Scope {
     vars: HashMap<String, Symbol>,
+    consts: HashMap<String, (RxType, RxValue)>,
+    funcs: HashMap<String, FuncSig>,
 }
 
 impl Scope {
@@ -38,6 +41,22 @@ impl Scope {
 
     fn get(&self, name: &str) -> Option<&Symbol> {
         self.vars.get(name)
+    }
+
+    fn declare_const(&mut self, name: &str, ty: RxType, val: RxValue) {
+        self.consts.insert(name.to_string(), (ty, val));
+    }
+
+    fn get_const(&self, name: &str) -> Option<&(RxType, RxValue)> {
+        self.consts.get(name)
+    }
+
+    fn declare_fn(&mut self, name: String, sig: FuncSig) {
+        self.funcs.insert(name, sig);
+    }
+
+    fn get_fn(&self, name: &str) -> Option<&FuncSig> {
+        self.funcs.get(name)
     }
 }
 
@@ -74,13 +93,13 @@ pub enum SelfKind {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Globe {
     scope_stack: Vec<Scope>,
-    funcs: HashMap<String, FuncSig>,
+    // funcs: HashMap<String, FuncSig>,
     structs: HashMap<String, HashMap<String, RxType>>,
     methods: HashMap<(String, String), FuncSig>, // (struct, method) -> sig
     static_methods: HashMap<(String, String), FuncSig>, // no self
     traits: HashMap<String, HashMap<String, FuncSig>>, // trait -> method -> sig
     impl_traits: HashMap<String, Vec<String>>,   // struct -> traits
-    const_items: HashMap<String, (RxType, RxValue)>, // name -> (type, value)
+    // const_items: HashMap<String, (RxType, RxValue)>, // name -> (type, value)
     enums: HashMap<String, HashMap<String, usize>>, // enum -> (name, index)
 }
 
@@ -107,19 +126,26 @@ impl Globe {
     }
 
     fn declare_const(&mut self, name: &Token, ty: &RxType, val: &RxValue) -> SemanticResult<()> {
-        if self.const_items.contains_key(&name.lexeme) {
-            return Err(SemanticError::ConstRedeclaration {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            if scope.get_const(&name.lexeme).is_some() {
+                return Err(SemanticError::ConstRedeclaration {
+                    name: name.lexeme.clone(),
+                    line: name.position.line,
+                    column: name.position.column,
+                });
+            }
+            scope.declare_const(&name.lexeme, ty.clone(), val.clone());
+        } else {
+            return Err(SemanticError::DeclarationOutOfScope {
                 name: name.lexeme.clone(),
                 line: name.position.line,
                 column: name.position.column,
             });
         }
-        self.const_items
-            .insert(name.lexeme.clone(), (ty.clone(), val.clone()));
         Ok(())
     }
 
-    fn lookup_var(&self, name: &str) -> Option<&Symbol> {
+    pub fn lookup_var(&self, name: &str) -> Option<&Symbol> {
         for scope in self.scope_stack.iter().rev() {
             if let Some(s) = scope.get(name) {
                 return Some(s);
@@ -128,8 +154,13 @@ impl Globe {
         None
     }
 
-    fn lookup_const(&self, name: &str) -> Option<&(RxType, RxValue)> {
-        self.const_items.get(name)
+    pub fn lookup_const(&self, name: &str) -> Option<&(RxType, RxValue)> {
+        for scope in self.scope_stack.iter().rev() {
+            if let Some(c) = scope.get_const(name) {
+                return Some(c);
+            }
+        }
+        None
     }
 
     fn declare_fn(
@@ -139,22 +170,28 @@ impl Globe {
         ret: RxType,
         tok: Token,
     ) -> SemanticResult<()> {
-        if self.funcs.contains_key(&name) {
-            return Err(SemanticError::FunctionRedeclaration {
-                name: name.clone(),
-                line: tok.position.line,
-                column: tok.position.column,
+        let sig = FuncSig {
+            param_types: params,
+            return_type: ret,
+            token: tok,
+            self_kind: SelfKind::None,
+        };
+        if let Some(scope) = self.scope_stack.last_mut() {
+            if scope.get_fn(&name).is_some() {
+                return Err(SemanticError::FunctionRedeclaration {
+                    name,
+                    line: sig.token.position.line,
+                    column: sig.token.position.column,
+                });
+            }
+            scope.declare_fn(name, sig);
+        } else {
+            return Err(SemanticError::DeclarationOutOfScope {
+                name,
+                line: sig.token.position.line,
+                column: sig.token.position.column,
             });
         }
-        self.funcs.insert(
-            name,
-            FuncSig {
-                param_types: params,
-                return_type: ret,
-                token: tok,
-                self_kind: SelfKind::None,
-            },
-        );
         Ok(())
     }
 
@@ -169,12 +206,18 @@ impl Globe {
     }
 
     fn lookup_fn(&self, name: &str) -> Option<&FuncSig> {
-        self.funcs.get(name)
+        for scope in self.scope_stack.iter().rev() {
+            if let Some(f) = scope.get_fn(name) {
+                return Some(f);
+            }
+        }
+        None
     }
 }
 
 pub struct Analyzer {
     pub globe: Globe,
+    pub type_context: TypeContext,
     current_return_type: Option<RxType>,
     loop_stack: Vec<LoopContext>,
     current_struct: Option<String>,
@@ -189,6 +232,7 @@ impl Analyzer {
     pub fn new() -> Self {
         Self {
             globe: Globe::default(),
+            type_context: TypeContext::new(),
             current_return_type: None,
             loop_stack: Vec::new(),
             current_struct: None,
@@ -231,8 +275,8 @@ impl Analyzer {
     }
 
     pub fn analyse_program(&mut self, nodes: &[AstNode]) -> SemanticResult<()> {
-        self.add_built_ins()?;
         self.globe.push_scope();
+        self.add_built_ins()?;
         for node in nodes {
             match node {
                 AstNode::Statement(stmt) => {
@@ -249,12 +293,12 @@ impl Analyzer {
             match node {
                 AstNode::Function(func) => {
                     let sig = self.extract_sig(func)?;
-                    let _ = self.globe.declare_fn(
+                    self.globe.declare_fn(
                         sig.token.lexeme.clone(),
                         sig.param_types,
                         sig.return_type,
                         sig.token,
-                    );
+                    )?;
                 }
                 AstNode::Struct(sd) => {
                     let mut field_map = HashMap::new();
@@ -335,7 +379,7 @@ impl Analyzer {
         Ok(())
     }
 
-    fn extract_sig(&self, func: &FunctionNode) -> SemanticResult<FuncSig> {
+    fn extract_sig(&mut self, func: &FunctionNode) -> SemanticResult<FuncSig> {
         let name = func.name.lexeme.clone();
         let params: Vec<RxType> = func
             .param_list
@@ -728,12 +772,31 @@ impl Analyzer {
         let mut ret = RxType::Unit;
         let mut exit_flag = false;
         for stmt in blk.stats.iter() {
+            match stmt {
+                StatementNode::Const(_) => {
+                    self.analyse_statement(stmt)?;
+                }
+                _ => {}
+            }
+        }
+        for stmt in blk.stats.iter() {
+            match stmt {
+                StatementNode::Func(_) => {
+                    self.analyse_statement(stmt)?;
+                }
+                _ => {}
+            }
+        }
+        for stmt in blk.stats.iter() {
             if exit_flag {
                 return Err(SemanticError::Generic {
                     msg: "Unreachable code".into(),
                     line: 0,
                     column: 0,
                 });
+            }
+            if matches!(stmt, StatementNode::Const(_) | StatementNode::Func(_)) {
+                continue;
             }
             let ty = self.analyse_statement(stmt)?;
             if let Some(t) = ty {
@@ -756,7 +819,7 @@ impl Analyzer {
                     column: 0,
                 });
             }
-            ret = self.analyse_expression(expr)?
+            ret = self.analyse_expression(expr)?;
         }
         self.globe.pop_scope();
         Ok(ret)
@@ -771,6 +834,7 @@ impl Analyzer {
                 identifier,
                 type_annotation,
                 value,
+                ..
             }) => {
                 let mut expr_ty = if let Some(val) = value {
                     self.analyse_expression(val)?
@@ -804,7 +868,9 @@ impl Analyzer {
                 })?;
                 Ok(None)
             }
-            StatementNode::Assign(AssignStatementNode { identifier, value }) => {
+            StatementNode::Assign(AssignStatementNode {
+                identifier, value, ..
+            }) => {
                 let symbol = match self.globe.lookup_var(&identifier.lexeme).cloned() {
                     Some(s) => s,
                     None => {
@@ -840,10 +906,15 @@ impl Analyzer {
                 name,
                 type_annotation,
                 value,
+                ..
             }) => {
                 let decl_ty = self.type_from_node(&type_annotation)?;
-                let (value_ty, const_val) =
-                    ConstFolder::calc_expr(&value, const_token, &self.globe.const_items)?;
+                let (value_ty, const_val) = ConstFolder::calc_expr(
+                    &value,
+                    const_token,
+                    &self.globe,
+                    &mut self.type_context,
+                )?;
                 if RxType::unify(&decl_ty, &value_ty).is_none() {
                     return Err(SemanticError::AssignTypeMismatched {
                         expected: decl_ty,
@@ -867,7 +938,7 @@ impl Analyzer {
                 self.analyse_function(func)?;
                 Ok(None)
             }
-            StatementNode::Expression(ExprStatementNode { expression }) => {
+            StatementNode::Expression(ExprStatementNode { expression, .. }) => {
                 let ty = self.analyse_expression(expression)?;
                 Ok(Some(ty))
             }
@@ -876,8 +947,9 @@ impl Analyzer {
 
     pub fn analyse_expression(&mut self, expr: &ExpressionNode) -> SemanticResult<RxType> {
         match expr {
-            ExpressionNode::Identifier(token) => {
+            ExpressionNode::Identifier(token, node_id) => {
                 if let Some(ty) = self.globe.get_var_or_const_type(&token.lexeme) {
+                    self.type_context.set_type(*node_id, ty.clone());
                     Ok(ty.clone())
                 } else {
                     Err(SemanticError::UndefinedIdentifier {
@@ -887,22 +959,64 @@ impl Analyzer {
                     })
                 }
             }
-            ExpressionNode::IntegerLiteral(token) => {
-                if token.lexeme.contains("isize") {
-                    Ok(RxType::ISize)
+            ExpressionNode::IntegerLiteral(token, node_id) => {
+                let ty = if token.lexeme.contains("isize") {
+                    self.type_context.set_type(*node_id, RxType::ISize);
+                    RxType::ISize
                 } else if token.lexeme.contains("usize") {
-                    Ok(RxType::USize)
+                    self.type_context.set_type(*node_id, RxType::USize);
+                    RxType::USize
                 } else if token.lexeme.contains("u32") {
-                    Ok(RxType::U32)
+                    self.type_context.set_type(*node_id, RxType::U32);
+                    RxType::U32
                 } else if token.lexeme.contains("i32") {
-                    Ok(RxType::I32)
+                    self.type_context.set_type(*node_id, RxType::I32);
+                    RxType::I32
                 } else {
-                    Ok(RxType::IntLiteral)
+                    self.type_context.set_type(*node_id, RxType::IntLiteral);
+                    RxType::IntLiteral
+                };
+                let mut clean = token.lexeme.replace('_', "");
+                for suf in ["isize", "usize", "u32", "i32"] {
+                    if clean.ends_with(suf) {
+                        clean = clean.trim_end_matches(suf).to_string();
+                        break;
+                    }
                 }
+                let (tp, _) = match ty {
+                    RxType::I32 => clean.parse::<i32>().map(|v| (RxType::I32, RxValue::I32(v))),
+                    RxType::U32 => clean.parse::<u32>().map(|v| (RxType::U32, RxValue::U32(v))),
+                    RxType::ISize => clean
+                        .parse::<isize>()
+                        .map(|v| (RxType::ISize, RxValue::ISize(v))),
+                    RxType::USize => clean
+                        .parse::<usize>()
+                        .map(|v| (RxType::USize, RxValue::USize(v))),
+                    RxType::IntLiteral => clean
+                        .parse::<i32>()
+                        .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v as i64))),
+                    _ => unreachable!(),
+                }
+                .map_err(|_| SemanticError::InvalidConstExpr {
+                    expr: token.lexeme.clone(),
+                    line: token.position.line,
+                    column: token.position.column,
+                })?;
+                Ok(tp)
             }
-            ExpressionNode::StringLiteral(_) => Ok(RxType::Ref(Box::new(RxType::Str), false)),
-            ExpressionNode::CharLiteral(_) => Ok(RxType::Char),
-            ExpressionNode::BoolLiteral(_) => Ok(RxType::Bool),
+            ExpressionNode::StringLiteral(_, node_id) => {
+                self.type_context
+                    .set_type(*node_id, RxType::Ref(Box::new(RxType::Str), false));
+                Ok(RxType::Ref(Box::new(RxType::Str), false))
+            }
+            ExpressionNode::CharLiteral(_, node_id) => {
+                self.type_context.set_type(*node_id, RxType::Char);
+                Ok(RxType::Char)
+            }
+            ExpressionNode::BoolLiteral(_, node_id) => {
+                self.type_context.set_type(*node_id, RxType::Bool);
+                Ok(RxType::Bool)
+            }
             ExpressionNode::Block(b) => Ok(self.analyse_block(b)?),
             ExpressionNode::ArrayLiteral(arr) => Ok(self.analyse_array_literal(arr)?),
             ExpressionNode::TupleLiteral(t) => {
@@ -933,7 +1047,7 @@ impl Analyzer {
             ExpressionNode::Deref(d) => Ok(self.analyse_deref(d)?),
             ExpressionNode::Return(ret) => Ok(self.analyse_return(ret)?),
             ExpressionNode::As(a) => Ok(self.analyse_as(a)?),
-            ExpressionNode::Underscore(_) => Ok(RxType::Never),
+            ExpressionNode::Underscore(..) => Ok(RxType::Never),
         }
     }
 
@@ -942,6 +1056,7 @@ impl Analyzer {
         match &u.operator.token_type {
             TokenType::Plus | TokenType::Minus => {
                 if rt.is_integer() {
+                    self.type_context.set_type(u.node_id, rt.clone());
                     Ok(rt)
                 } else {
                     Err(SemanticError::InvalidUnaryOperandType {
@@ -961,6 +1076,7 @@ impl Analyzer {
                         column: u.operator.position.column,
                     })
                 } else {
+                    self.type_context.set_type(u.node_id, RxType::Bool);
                     Ok(RxType::Bool)
                 }
             }
@@ -992,6 +1108,7 @@ impl Analyzer {
                     })
                 } else {
                     if let Some(unified) = RxType::unify(&lt, &rt) {
+                        self.type_context.set_type(b.node_id, unified.clone());
                         Ok(unified)
                     } else {
                         Err(SemanticError::MismatchedBinaryTypes {
@@ -1007,6 +1124,7 @@ impl Analyzer {
 
             EqEq | NEq => {
                 if let Some(_) = RxType::unify(&lt, &rt) {
+                    self.type_context.set_type(b.node_id, RxType::Bool);
                     Ok(RxType::Bool)
                 } else {
                     Err(SemanticError::MismatchedBinaryTypes {
@@ -1037,6 +1155,7 @@ impl Analyzer {
                         column,
                     })
                 } else {
+                    self.type_context.set_type(b.node_id, RxType::Bool);
                     Ok(RxType::Bool)
                 }
             }
@@ -1050,6 +1169,7 @@ impl Analyzer {
                         column,
                     })
                 } else {
+                    self.type_context.set_type(b.node_id, RxType::Bool);
                     Ok(RxType::Bool)
                 }
             }
@@ -1074,6 +1194,7 @@ impl Analyzer {
                     });
                 }
                 if let Some(unified) = RxType::unify(&lt, &rt) {
+                    self.type_context.set_type(b.node_id, unified.clone());
                     Ok(unified)
                 } else {
                     Err(SemanticError::MismatchedBinaryTypes {
@@ -1095,6 +1216,7 @@ impl Analyzer {
                     });
                 }
                 if let Some(unified) = RxType::unify(&lt, &rt) {
+                    self.type_context.set_type(b.node_id, unified.clone());
                     Ok(unified)
                 } else {
                     Err(SemanticError::MismatchedBinaryTypes {
@@ -1121,7 +1243,7 @@ impl Analyzer {
         }
         let idx_ty = self.analyse_expression(&i.index)?;
         // TODO: Handle idx_ty later
-        if !idx_ty.is_integer() {
+        if RxType::unify(&idx_ty, &RxType::USize).is_none() {
             // Currently not handle position information
             return Err(SemanticError::InvalidIndexType {
                 found: idx_ty,
@@ -1130,6 +1252,7 @@ impl Analyzer {
             });
         }
         if let RxType::Array(elem, _) = arr_ty {
+            self.type_context.set_type(i.node_id, (*elem).clone());
             Ok(*elem)
         } else {
             Err(SemanticError::IndexNonArray {
@@ -1207,14 +1330,14 @@ impl Analyzer {
         let ty = self.analyse_expression(&r.operand)?;
         if r.mutable {
             match &*r.operand {
-                ExpressionNode::IntegerLiteral(_)
-                | ExpressionNode::StringLiteral(_)
-                | ExpressionNode::CharLiteral(_)
-                | ExpressionNode::BoolLiteral(_)
-                | ExpressionNode::ArrayLiteral(_)
-                | ExpressionNode::TupleLiteral(_)
-                | ExpressionNode::StructLiteral(_) => {}
-                ExpressionNode::Identifier(tok) => {
+                ExpressionNode::IntegerLiteral(..)
+                | ExpressionNode::StringLiteral(..)
+                | ExpressionNode::CharLiteral(..)
+                | ExpressionNode::BoolLiteral(..)
+                | ExpressionNode::ArrayLiteral(..)
+                | ExpressionNode::TupleLiteral(..)
+                | ExpressionNode::StructLiteral(..) => {}
+                ExpressionNode::Identifier(tok, ..) => {
                     let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                         return Err(SemanticError::UndefinedIdentifier {
                             name: tok.lexeme.clone(),
@@ -1231,7 +1354,7 @@ impl Analyzer {
                     }
                 }
                 ExpressionNode::Index(IndexExprNode { array, .. }) => {
-                    if let ExpressionNode::Identifier(tok) = &**array {
+                    if let ExpressionNode::Identifier(tok, ..) = &**array {
                         let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                             return Err(SemanticError::UndefinedIdentifier {
                                 name: tok.lexeme.clone(),
@@ -1259,7 +1382,7 @@ impl Analyzer {
                     }
                 }
                 ExpressionNode::Member(MemberExprNode { object, .. }) => {
-                    if let ExpressionNode::Identifier(tok) = &**object {
+                    if let ExpressionNode::Identifier(tok, ..) = &**object {
                         let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                             return Err(SemanticError::UndefinedIdentifier {
                                 name: tok.lexeme.clone(),
@@ -1295,12 +1418,14 @@ impl Analyzer {
                 }
             }
         }
+        self.type_context
+            .set_type(r.node_id, RxType::Ref(Box::new(ty.clone()), r.mutable));
         Ok(RxType::Ref(Box::new(ty), r.mutable))
     }
 
     fn analyse_array_literal(&mut self, arr: &ArrayLiteralNode) -> SemanticResult<RxType> {
         match arr {
-            ArrayLiteralNode::Elements { elements } => {
+            ArrayLiteralNode::Elements { elements, node_id } => {
                 let mut elem_ty = if let Some(node) = elements.first() {
                     self.analyse_expression(node)?
                 } else {
@@ -1318,14 +1443,30 @@ impl Analyzer {
                         }
                     };
                 }
+                self.type_context.set_type(
+                    *node_id,
+                    RxType::Array(Box::new(elem_ty.clone()), Some(elements.len())),
+                );
                 Ok(RxType::Array(Box::new(elem_ty), Some(elements.len())))
             }
 
-            ArrayLiteralNode::Repeated { element, size } => {
+            ArrayLiteralNode::Repeated {
+                element,
+                size,
+                node_id,
+            } => {
                 let elem_ty = self.analyse_expression(element)?;
-                let (_, size_val) =
-                    ConstFolder::calc_expr(size, &Token::default(), &self.globe.const_items)?;
+                let (_, size_val) = ConstFolder::calc_expr(
+                    size,
+                    &Token::default(),
+                    &self.globe,
+                    &mut self.type_context,
+                )?;
                 let size = size_val.as_usize()?;
+                self.type_context.set_type(
+                    *node_id,
+                    RxType::Array(Box::new(elem_ty.clone()), Some(size)),
+                );
                 Ok(RxType::Array(Box::new(elem_ty), Some(size)))
             }
         }
@@ -1423,6 +1564,7 @@ impl Analyzer {
                 column: a.as_token.position.column,
             });
         }
+        self.type_context.set_type(a.node_id, target_ty.clone());
         Ok(target_ty)
     }
 
@@ -1472,6 +1614,7 @@ impl Analyzer {
         });
         self.analyse_block(&w.body)?;
         self.loop_stack.pop();
+        self.type_context.set_type(w.node_id, RxType::Unit);
         Ok(RxType::Unit)
     }
 
@@ -1483,10 +1626,13 @@ impl Analyzer {
         let body_ty = self.analyse_block(&l.body)?;
         let ctx = self.loop_stack.pop().unwrap();
         if body_ty == RxType::Never && ctx.expected_type.is_none() {
+            self.type_context.set_type(l.node_id, RxType::Never);
             return Ok(RxType::Never);
         }
         // If no break encountered and body doesn't diverge -> infinite loop UB, treat as Never
-        Ok(ctx.expected_type.unwrap_or(RxType::Never))
+        let ty = ctx.expected_type.unwrap_or(RxType::Never);
+        self.type_context.set_type(l.node_id, ty.clone());
+        Ok(ty)
     }
 
     fn analyse_break(&mut self, brk: &BreakExprNode) -> SemanticResult<RxType> {
@@ -1611,9 +1757,11 @@ impl Analyzer {
                         });
                     }
                 }
+                self.type_context
+                    .set_type(c.node_id, sig.return_type.clone());
                 Ok(sig.return_type)
             }
-            ExpressionNode::Identifier(token) => {
+            ExpressionNode::Identifier(token, node_id) => {
                 let callee_name = token.lexeme.clone();
                 let Some(sig) = self.globe.lookup_fn(&callee_name).cloned() else {
                     return Err(SemanticError::UnknownCallee {
@@ -1648,6 +1796,8 @@ impl Analyzer {
                         });
                     }
                 }
+                self.type_context
+                    .set_type(*node_id, sig.return_type.clone());
                 Ok(sig.return_type)
             }
             _ => Err(SemanticError::Generic {
@@ -1828,12 +1978,14 @@ impl Analyzer {
                 });
             }
         }
+        self.type_context
+            .set_type(mc.node_id, sig.return_type.clone());
         Ok(sig.return_type)
     }
 
     fn is_mutable_lvalue(&self, expr: &ExpressionNode) -> bool {
         match expr {
-            ExpressionNode::Identifier(tok) => self
+            ExpressionNode::Identifier(tok, ..) => self
                 .globe
                 .lookup_var(&tok.lexeme)
                 .map(|s| match &s.ty {
@@ -1848,7 +2000,11 @@ impl Analyzer {
         }
     }
 
-    fn type_from_ann(&self, ann: Option<&TypeNode>, name_tok: &Token) -> SemanticResult<RxType> {
+    fn type_from_ann(
+        &mut self,
+        ann: Option<&TypeNode>,
+        name_tok: &Token,
+    ) -> SemanticResult<RxType> {
         match ann {
             Some(t) => self.type_from_node(t),
             None => Err(SemanticError::NeedAnnotation {
@@ -1859,7 +2015,7 @@ impl Analyzer {
         }
     }
 
-    fn type_from_node(&self, type_node: &TypeNode) -> SemanticResult<RxType> {
+    fn type_from_node(&mut self, type_node: &TypeNode) -> SemanticResult<RxType> {
         Ok(match type_node {
             TypeNode::I32(_) => RxType::I32,
             TypeNode::U32(_) => RxType::U32,
@@ -1883,7 +2039,8 @@ impl Analyzer {
                     let (_, size_val) = ConstFolder::calc_expr(
                         size_expr,
                         &Token::default(),
-                        &self.globe.const_items,
+                        &self.globe,
+                        &mut self.type_context,
                     )?;
                     Some(size_val.as_usize()?)
                 } else {

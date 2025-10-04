@@ -47,7 +47,7 @@ fn parse_expr(input: &str) -> ExpressionNode {
     maybe_dump_json(&ast);
     match ast.pop().expect("node") {
         AstNode::Expression(expr) => expr,
-        AstNode::Statement(StatementNode::Expression(ExprStatementNode { expression })) => {
+        AstNode::Statement(StatementNode::Expression(ExprStatementNode { expression, .. })) => {
             expression
         }
         other => panic!("expected expression, got {:?}", other),
@@ -72,6 +72,7 @@ fn precedence_multiplicative_over_additive() {
             operator,
             left_operand,
             right_operand,
+            ..
         }) => {
             assert!(matches!(operator.token_type, TokenType::Plus));
             match (*right_operand).clone() {
@@ -79,14 +80,15 @@ fn precedence_multiplicative_over_additive() {
                     operator,
                     left_operand,
                     right_operand,
+                    ..
                 }) => {
                     assert!(matches!(operator.token_type, TokenType::Mul));
-                    assert!(matches!(*left_operand, ExpressionNode::IntegerLiteral(_)));
-                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(_)));
+                    assert!(matches!(*left_operand, ExpressionNode::IntegerLiteral(..)));
+                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(..)));
                 }
                 _ => panic!("right should be a Mul"),
             }
-            assert!(matches!(*left_operand, ExpressionNode::IntegerLiteral(_)));
+            assert!(matches!(*left_operand, ExpressionNode::IntegerLiteral(..)));
         }
         _ => panic!("expected binary expr"),
     }
@@ -101,6 +103,7 @@ fn left_associative_addition() {
             operator,
             left_operand,
             right_operand,
+            ..
         }) => {
             assert!(matches!(operator.token_type, TokenType::Minus));
             // Left should be another minus
@@ -110,7 +113,7 @@ fn left_associative_addition() {
                 }
                 _ => panic!("left should be a minus"),
             }
-            assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(_)));
+            assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(..)));
         }
         _ => panic!("expected binary expr"),
     }
@@ -124,19 +127,20 @@ fn function_call_binds_tight() {
             operator,
             left_operand,
             right_operand,
+            ..
         }) => {
             assert!(matches!(operator.token_type, TokenType::Plus));
             match *left_operand {
-                ExpressionNode::Call(CallExprNode { function, args }) => {
+                ExpressionNode::Call(CallExprNode { function, args, .. }) => {
                     match *function {
-                        ExpressionNode::Identifier(ref tok) => assert_eq!(tok.lexeme, "f"),
+                        ExpressionNode::Identifier(ref tok, ..) => assert_eq!(tok.lexeme, "f"),
                         _ => panic!("call callee should be identifier"),
                     }
                     assert_eq!(args.len(), 2);
                 }
                 _ => panic!("left should be call"),
             }
-            assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(_)));
+            assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(..)));
         }
         _ => panic!("expected binary expr"),
     }
@@ -213,17 +217,18 @@ fn index_with_arbitrary_expression() {
     // a[i + 1];
     let expr = parse_expr("a[i + 1]");
     match expr {
-        ExpressionNode::Index(IndexExprNode { array, index }) => {
-            assert!(matches!(*array, ExpressionNode::Identifier(_)));
+        ExpressionNode::Index(IndexExprNode { array, index, .. }) => {
+            assert!(matches!(*array, ExpressionNode::Identifier(..)));
             match *index {
                 ExpressionNode::Binary(BinaryExprNode {
                     operator,
                     left_operand,
                     right_operand,
+                    ..
                 }) => {
                     assert!(matches!(operator.token_type, TokenType::Plus));
-                    assert!(matches!(*left_operand, ExpressionNode::Identifier(_)));
-                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(_)));
+                    assert!(matches!(*left_operand, ExpressionNode::Identifier(..)));
+                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(..)));
                 }
                 _ => panic!("index should be a binary expr i+1"),
             }
@@ -234,7 +239,7 @@ fn index_with_arbitrary_expression() {
     // f(x)[g(y) * 2];
     let expr2 = parse_expr("f(x)[g(y) * 2]");
     match expr2 {
-        ExpressionNode::Index(IndexExprNode { array, index }) => {
+        ExpressionNode::Index(IndexExprNode { array, index, .. }) => {
             // array side is a call f(x)
             match *array {
                 ExpressionNode::Call(_) => {}
@@ -245,13 +250,14 @@ fn index_with_arbitrary_expression() {
                     operator,
                     left_operand,
                     right_operand,
+                    ..
                 }) => {
                     assert!(matches!(operator.token_type, TokenType::Mul));
                     match *left_operand {
                         ExpressionNode::Call(_) => {}
                         _ => panic!("left of * should be a call g(y)"),
                     }
-                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(_)));
+                    assert!(matches!(*right_operand, ExpressionNode::IntegerLiteral(..)));
                 }
                 _ => panic!("index should be a binary expr g(y)*2"),
             }
@@ -272,13 +278,14 @@ fn assignment_right_associative_in_expr() {
                     operator,
                     left_operand,
                     right_operand,
+                    ..
                 }) => {
                     assert!(matches!(operator.token_type, TokenType::Eq));
                     // left of inner '=' should be identifier 'b'
-                    assert!(matches!(&**left_operand, ExpressionNode::Identifier(_)));
+                    assert!(matches!(&**left_operand, ExpressionNode::Identifier(..)));
                     assert!(matches!(
                         &**right_operand,
-                        ExpressionNode::IntegerLiteral(_)
+                        ExpressionNode::IntegerLiteral(..)
                     ));
                 }
                 _ => panic!("assign RHS should be an assignment expression"),
@@ -298,9 +305,10 @@ fn assignment_has_lowest_precedence() {
                 operator,
                 left_operand,
                 right_operand,
+                ..
             }) => {
                 assert!(matches!(operator.token_type, TokenType::Plus));
-                assert!(matches!(&**left_operand, ExpressionNode::Identifier(_)));
+                assert!(matches!(&**left_operand, ExpressionNode::Identifier(..)));
                 match &**right_operand {
                     ExpressionNode::Binary(BinaryExprNode { operator, .. }) => {
                         assert!(matches!(operator.token_type, TokenType::Mul));
@@ -421,7 +429,7 @@ fn ref_expr_parse() {
     match expr {
         ExpressionNode::Ref(r) => {
             assert_eq!(r.mutable, false);
-            assert!(matches!(*r.operand, ExpressionNode::Identifier(_)));
+            assert!(matches!(*r.operand, ExpressionNode::Identifier(..)));
         }
         _ => panic!("expected ref expr"),
     }
@@ -431,7 +439,7 @@ fn ref_expr_parse() {
     match expr2 {
         ExpressionNode::Ref(r) => {
             assert_eq!(r.mutable, true);
-            assert!(matches!(*r.operand, ExpressionNode::Identifier(_)));
+            assert!(matches!(*r.operand, ExpressionNode::Identifier(..)));
         }
         _ => panic!("expected ref expr &mut"),
     }
@@ -439,8 +447,8 @@ fn ref_expr_parse() {
     // (&a)[0] parses as index whose array is a ref expr
     let expr3 = parse_expr("(&a)[0]");
     match expr3 {
-        ExpressionNode::Index(IndexExprNode { array, index }) => {
-            assert!(matches!(*index, ExpressionNode::IntegerLiteral(_)));
+        ExpressionNode::Index(IndexExprNode { array, index, .. }) => {
+            assert!(matches!(*index, ExpressionNode::IntegerLiteral(..)));
             match *array {
                 ExpressionNode::Ref(_) => {}
                 _ => panic!("array side should be a ref expr"),
@@ -494,7 +502,7 @@ fn deref_expression_parses() {
     let expr = parse_expr("*x");
     match expr {
         ExpressionNode::Deref(DerefExprNode { operand, .. }) => {
-            assert!(matches!(*operand, ExpressionNode::Identifier(_)));
+            assert!(matches!(*operand, ExpressionNode::Identifier(..)));
         }
         _ => panic!("expected deref expression"),
     }
