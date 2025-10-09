@@ -181,8 +181,10 @@ pub enum StatementNode {
     Let(LetStatementNode),
     Assign(AssignStatementNode),
     Expression(ExprStatementNode),
+    Block(BlockNode),
     Const(ConstItemNode),
     Func(FunctionNode),
+    Struct(StructDeclNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -308,6 +310,7 @@ pub struct StaticMemberExprNode {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RefExprNode {
+    pub ref_token: Token,
     pub node_id: NodeId,
     pub mutable: bool,
     pub operand: Box<ExpressionNode>,

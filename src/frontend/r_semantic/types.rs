@@ -202,6 +202,21 @@ impl RxValue {
         }
     }
 
+    pub fn as_int(&self) -> SemanticResult<i64> {
+        match self {
+            RxValue::I32(v) => Ok(*v as i64),
+            RxValue::U32(v) => Ok(*v as i64),
+            RxValue::ISize(v) => Ok(*v as i64),
+            RxValue::USize(v) => Ok(*v as i64),
+            RxValue::IntLiteral(v) => Ok(*v),
+            RxValue::Char(v) => Ok(*v as i64),
+            RxValue::Bool(v) => Ok(*v as i64),
+            _ => Err(SemanticError::InternalError {
+                message: format!("Cannot convert {:?} to int", self),
+            }),
+        }
+    }
+
     pub fn as_usize(&self) -> SemanticResult<usize> {
         match self {
             RxValue::USize(v) => Ok(*v),

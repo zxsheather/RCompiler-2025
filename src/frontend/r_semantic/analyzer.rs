@@ -7,8 +7,8 @@ use crate::frontend::{
         BreakExprNode, CallExprNode, ConstItemNode, ContinueExprNode, DerefExprNode, ElseBodyNode,
         ExprStatementNode, ExpressionNode, FunctionNode, IfExprNode, ImplNode, ImplTraitBlockNode,
         IndexExprNode, LetStatementNode, LoopExprNode, MemberExprNode, MethodCallExprNode,
-        RefExprNode, ReturnExprNode, StatementNode, StaticMemberExprNode, StructLiteralNode,
-        TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
+        RefExprNode, ReturnExprNode, StatementNode, StaticMemberExprNode, StructDeclNode,
+        StructLiteralNode, TraitDeclNode, TypeNode, UnaryExprNode, WhileExprNode,
     },
     r_semantic::{
         built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
@@ -301,15 +301,7 @@ impl Analyzer {
                     )?;
                 }
                 AstNode::Struct(sd) => {
-                    let mut field_map = HashMap::new();
-                    for field in &sd.fields {
-                        let ty = self.type_from_node(&field.type_annotation)?;
-                        field_map.insert(field.name.lexeme.clone(), ty);
-                    }
-                    self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
-                    self.globe
-                        .impl_traits
-                        .insert(sd.name.lexeme.clone(), Vec::new());
+                    self.analyse_struct_decl(sd)?;
                 }
                 AstNode::Trait(td) => {
                     self.declare_trait(td)?;
@@ -471,6 +463,19 @@ impl Analyzer {
             );
         }
         self.globe.traits.insert(td.name.lexeme.clone(), methods);
+        Ok(())
+    }
+
+    fn analyse_struct_decl(&mut self, sd: &StructDeclNode) -> SemanticResult<()> {
+        let mut field_map = HashMap::new();
+        for field in &sd.fields {
+            let ty = self.type_from_node(&field.type_annotation)?;
+            field_map.insert(field.name.lexeme.clone(), ty);
+        }
+        self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
+        self.globe
+            .impl_traits
+            .insert(sd.name.lexeme.clone(), Vec::new());
         Ok(())
     }
 
@@ -781,6 +786,23 @@ impl Analyzer {
         }
         for stmt in blk.stats.iter() {
             match stmt {
+                StatementNode::Func(func) => {
+                    let sig = self.extract_sig(func)?;
+                    self.globe.declare_fn(
+                        sig.token.lexeme.clone(),
+                        sig.param_types,
+                        sig.return_type,
+                        sig.token,
+                    )?;
+                }
+                StatementNode::Struct(_) => {
+                    self.analyse_statement(stmt)?;
+                }
+                _ => {}
+            }
+        }
+        for stmt in blk.stats.iter() {
+            match stmt {
                 StatementNode::Func(_) => {
                     self.analyse_statement(stmt)?;
                 }
@@ -795,7 +817,10 @@ impl Analyzer {
                     column: 0,
                 });
             }
-            if matches!(stmt, StatementNode::Const(_) | StatementNode::Func(_)) {
+            if matches!(
+                stmt,
+                StatementNode::Const(_) | StatementNode::Func(_) | StatementNode::Struct(_)
+            ) {
                 continue;
             }
             let ty = self.analyse_statement(stmt)?;
@@ -926,15 +951,16 @@ impl Analyzer {
                 self.globe.declare_const(name, &decl_ty, &const_val)?;
                 Ok(None)
             }
+            StatementNode::Struct(sd) => {
+                self.analyse_struct_decl(sd)?;
+                Ok(None)
+            }
+            StatementNode::Block(b) => {
+                let ty = self.analyse_block(b)?;
+                Ok(Some(ty))
+            }
             // Handled later
             StatementNode::Func(func) => {
-                let sig = self.extract_sig(func)?;
-                self.globe.declare_fn(
-                    sig.token.lexeme.clone(),
-                    sig.param_types,
-                    sig.return_type,
-                    sig.token,
-                )?;
                 self.analyse_function(func)?;
                 Ok(None)
             }
@@ -993,8 +1019,8 @@ impl Analyzer {
                         .parse::<usize>()
                         .map(|v| (RxType::USize, RxValue::USize(v))),
                     RxType::IntLiteral => clean
-                        .parse::<i32>()
-                        .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v as i64))),
+                        .parse::<i64>()
+                        .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v))),
                     _ => unreachable!(),
                 }
                 .map_err(|_| SemanticError::InvalidConstExpr {
@@ -1353,8 +1379,8 @@ impl Analyzer {
                         });
                     }
                 }
-                ExpressionNode::Index(IndexExprNode { array, .. }) => {
-                    if let ExpressionNode::Identifier(tok, ..) = &**array {
+                ExpressionNode::Index(IndexExprNode { array, .. }) => match &**array {
+                    ExpressionNode::Identifier(tok, ..) => {
                         let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
                             return Err(SemanticError::UndefinedIdentifier {
                                 name: tok.lexeme.clone(),
@@ -1373,14 +1399,43 @@ impl Analyzer {
                                 column: tok.position.column,
                             });
                         }
-                    } else {
+                    }
+                    ExpressionNode::Member(MemberExprNode { object, .. }) => {
+                        if let ExpressionNode::Identifier(tok, ..) = &**object {
+                            let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
+                                return Err(SemanticError::UndefinedIdentifier {
+                                    name: tok.lexeme.clone(),
+                                    line: tok.position.line,
+                                    column: tok.position.column,
+                                });
+                            };
+                            let can_write = match &symbol.ty {
+                                RxType::Ref(_, is_mut) => *is_mut,
+                                _ => symbol.mutable,
+                            };
+                            if !can_write {
+                                return Err(SemanticError::BorrowMutFromImmutable {
+                                    name: tok.lexeme.clone(),
+                                    line: tok.position.line,
+                                    column: tok.position.column,
+                                });
+                            }
+                        } else {
+                            return Err(SemanticError::Generic {
+                                msg: "Cannot take mutable reference of non-lvalue".to_string(),
+                                line: r.ref_token.position.line,
+                                column: r.ref_token.position.column,
+                            });
+                        }
+                    }
+                    _ => {
                         return Err(SemanticError::Generic {
                             msg: "Cannot take mutable reference of non-lvalue".to_string(),
-                            line: 0,
-                            column: 0,
+                            line: r.ref_token.position.line,
+                            column: r.ref_token.position.column,
                         });
                     }
-                }
+                },
                 ExpressionNode::Member(MemberExprNode { object, .. }) => {
                     if let ExpressionNode::Identifier(tok, ..) = &**object {
                         let Some(symbol) = self.globe.lookup_var(&tok.lexeme) else {
@@ -1404,8 +1459,8 @@ impl Analyzer {
                     } else {
                         return Err(SemanticError::Generic {
                             msg: "Cannot take mutable reference of non-lvalue".to_string(),
-                            line: 0,
-                            column: 0,
+                            line: r.ref_token.position.line,
+                            column: r.ref_token.position.column,
                         });
                     }
                 }
@@ -1784,6 +1839,23 @@ impl Analyzer {
                 }
 
                 for (i, (pt, arg)) in sig.param_types.iter().zip(&c.args).enumerate() {
+                    if let ExpressionNode::IntegerLiteral(value, _) = arg {
+                        let val = ConstFolder::calc_expr(
+                            arg,
+                            value,
+                            &self.globe,
+                            &mut self.type_context,
+                        )?;
+                        if let RxValue::IntLiteral(v) = val.1 {
+                            if v >= i32::MAX as i64 {
+                                return Err(SemanticError::Generic {
+                                    msg: "Integer literal overflow".to_string(),
+                                    line: value.position.line,
+                                    column: value.position.column,
+                                });
+                            }
+                        }
+                    }
                     let at = self.analyse_expression(arg)?;
                     if RxType::unify(pt, &at).is_none() {
                         return Err(SemanticError::ArgTypeMismatched {

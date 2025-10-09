@@ -152,7 +152,7 @@ fn let_and_assign_statements() {
     assert_eq!(nodes.len(), 1);
     assert!(matches!(
         nodes[0],
-        AstNode::Statement(StatementNode::Expression(ExprStatementNode { .. }))
+        AstNode::Statement(StatementNode::Block(BlockNode { .. }))
     ));
 }
 
