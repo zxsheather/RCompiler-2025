@@ -48,7 +48,7 @@ impl Parser {
     pub fn next_node(&mut self) -> ParseResult<AstNode> {
         match self.current_token().token_type {
             TokenType::Trait => Ok(AstNode::Trait(self.parse_trait_decl()?)),
-            TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_delc()?)),
+            TokenType::Struct => Ok(AstNode::Struct(self.parse_struct_decl()?)),
             TokenType::Fn => Ok(AstNode::Function(self.parse_function()?)),
             TokenType::Enum => Ok(AstNode::Enum(self.parse_enum_decl()?)),
             TokenType::Impl => {
@@ -370,7 +370,7 @@ impl Parser {
         })
     }
 
-    fn parse_struct_delc(&mut self) -> ParseResult<StructDeclNode> {
+    fn parse_struct_decl(&mut self) -> ParseResult<StructDeclNode> {
         let struct_token = self.expect_type(&TokenType::Struct)?;
         let name = self.expect_type(&TokenType::Identifier)?;
         self.expect_type(&TokenType::LBrace)?;
@@ -405,7 +405,8 @@ impl Parser {
         match self.current_token().token_type {
             TokenType::Let | TokenType::If | TokenType::While | TokenType::Loop => true,
             TokenType::Return => true,
-            TokenType::Const | TokenType::Fn => true,
+            TokenType::Const | TokenType::Fn | TokenType::Struct => true,
+            TokenType::LBrace => true,
             TokenType::Identifier => self
                 .peek_safe()
                 .map(|t| matches!(t.token_type, TokenType::Eq))
@@ -481,6 +482,10 @@ impl Parser {
                     }))
                 }
             }
+            TokenType::LBrace => {
+                let block = self.parse_block()?;
+                Ok(StatementNode::Block(block))
+            }
             TokenType::If => {
                 let expression = self.parse_if_expression()?;
                 Ok(StatementNode::Expression(ExprStatementNode {
@@ -521,6 +526,10 @@ impl Parser {
                 let func = self.parse_function()?;
                 Ok(StatementNode::Func(func))
             }
+            TokenType::Struct => {
+                let struct_decl = self.parse_struct_decl()?;
+                Ok(StatementNode::Struct(struct_decl))
+            }
             _ => {
                 let expression = self.parse_expression()?;
                 self.expect_type(&TokenType::Semicolon)?;
@@ -551,6 +560,7 @@ impl Parser {
                 })
             }
             TokenType::And => {
+                let ref_token = self.current_token().clone();
                 self.advance();
                 let mutable = if self.check_type(&TokenType::Mut) {
                     self.advance();
@@ -561,6 +571,7 @@ impl Parser {
                 let r_bp = 135;
                 let rhs = self.parse_expr_bp(r_bp)?;
                 ExpressionNode::Ref(RefExprNode {
+                    ref_token,
                     mutable,
                     operand: Box::new(rhs),
                     node_id: self.type_context.assign_node_id(),

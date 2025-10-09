@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::ast::{
-        ArrayLiteralNode, BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode, UnaryExprNode,
+        ArrayLiteralNode, AsExprNode, BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode,
+        UnaryExprNode,
     },
     r_semantic::{
         analyzer::Globe,
@@ -177,6 +178,68 @@ impl ConstFolder {
                 type_context.set_type(*node_id, res.0.clone());
                 Ok(res)
             }
+            ExpressionNode::As(as_node) => {
+                let (expr_ty, expr_val) =
+                    Self::calc_expr(&as_node.expr, report_tok, globe, type_context)?;
+                let target_ty = Self::type_from_node(&as_node.type_name, report_tok)?;
+                let val = expr_val.as_int()?;
+                match target_ty {
+                    RxType::I32 => {
+                        if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                            return Err(SemanticError::InvalidConstExpr {
+                                expr: "integer overflow in as-cast to i32".to_string(),
+                                line: report_tok.position.line,
+                                column: report_tok.position.column,
+                            });
+                        }
+                        type_context.set_type(as_node.node_id, RxType::I32);
+                        Ok((RxType::I32, RxValue::I32(val as i32)))
+                    }
+                    RxType::U32 => {
+                        if val < 0 || val > u32::MAX as i64 {
+                            return Err(SemanticError::InvalidConstExpr {
+                                expr: "integer overflow in as-cast to u32".to_string(),
+                                line: report_tok.position.line,
+                                column: report_tok.position.column,
+                            });
+                        }
+                        type_context.set_type(as_node.node_id, RxType::U32);
+                        Ok((RxType::U32, RxValue::U32(val as u32)))
+                    }
+                    RxType::ISize => {
+                        if val < i32::MIN as i64 || val > i32::MAX as i64 {
+                            return Err(SemanticError::InvalidConstExpr {
+                                expr: "integer overflow in as-cast to isize".to_string(),
+                                line: report_tok.position.line,
+                                column: report_tok.position.column,
+                            });
+                        }
+                        type_context.set_type(as_node.node_id, RxType::ISize);
+                        Ok((RxType::ISize, RxValue::ISize(val as isize)))
+                    }
+                    RxType::USize => {
+                        if val < 0 || val > u32::MAX as i64 {
+                            return Err(SemanticError::InvalidConstExpr {
+                                expr: "integer overflow in as-cast to usize".to_string(),
+                                line: report_tok.position.line,
+                                column: report_tok.position.column,
+                            });
+                        }
+                        type_context.set_type(as_node.node_id, RxType::USize);
+                        Ok((RxType::USize, RxValue::USize(val as usize)))
+                    }
+                    _ => {
+                        return Err(SemanticError::InvalidConstExpr {
+                            expr: format!(
+                                "unsupported as-cast from {:?} to {:?}",
+                                expr_ty, target_ty
+                            ),
+                            line: report_tok.position.line,
+                            column: report_tok.position.column,
+                        });
+                    }
+                }
+            }
             other => Err(SemanticError::InvalidConstExpr {
                 expr: format!("{:?}", other),
                 line: report_tok.position.line,
@@ -214,8 +277,8 @@ impl ConstFolder {
                 .parse::<usize>()
                 .map(|v| (RxType::USize, RxValue::USize(v))),
             RxType::IntLiteral => clean
-                .parse::<i32>()
-                .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v as i64))),
+                .parse::<i64>()
+                .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v))),
             _ => unreachable!(),
         }
         .map_err(|_| SemanticError::InvalidConstExpr {
