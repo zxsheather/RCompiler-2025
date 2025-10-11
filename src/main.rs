@@ -184,6 +184,11 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
         return 1;
     }
 
+    let global_manifest = path.join("global.json");
+    if global_manifest.exists() {
+        return run_semantic_tests_with_manifest(path, &global_manifest, start_time);
+    }
+
     // Helper to run one case directory
     fn run_case(case_dir: &Path) -> (String, i32, i32, Option<String>, bool) {
         let mut rx_file: Option<PathBuf> = None;
@@ -343,6 +348,126 @@ fn run_semantic_tests(root: Option<String>) -> i32 {
         );
         return 1;
     }
+    let total_duration = start_time.elapsed();
+    eprintln!(
+        "Total test time: {:.3}ms",
+        total_duration.as_secs_f64() * 1000.0
+    );
+    0
+}
+
+fn run_semantic_tests_with_manifest(path: &Path, manifest_path: &Path, start_time: Instant) -> i32 {
+    let manifest_txt = match fs::read_to_string(manifest_path) {
+        Ok(txt) => txt,
+        Err(e) => {
+            eprintln!("Failed to read manifest {}: {e}", manifest_path.display());
+            return 1;
+        }
+    };
+
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(&manifest_txt) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to parse manifest {}: {e}", manifest_path.display());
+            return 1;
+        }
+    };
+
+    let mut total = 0usize;
+    let mut passed = 0usize;
+    let mut failed_cases: Vec<(String, i32, i32, String)> = Vec::new();
+    let mut passed_cases: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let active = entry
+            .get("active")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if !active {
+            continue;
+        }
+
+        total += 1;
+
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unnamed>")
+            .to_string();
+        let expected = entry
+            .get("compileexitcode")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
+            .unwrap_or(0);
+        let source_rel = entry
+            .get("source")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.get(0))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let Some(source_rel) = source_rel else {
+            failed_cases.push((
+                name.clone(),
+                expected,
+                -999,
+                "manifest missing source path".to_string(),
+            ));
+            continue;
+        };
+
+        let source_path = path.join(source_rel);
+        let src = match fs::read_to_string(&source_path) {
+            Ok(s) => s,
+            Err(e) => {
+                failed_cases.push((
+                    name.clone(),
+                    expected,
+                    -999,
+                    format!("failed to read {}: {e}", source_path.display()),
+                ));
+                continue;
+            }
+        };
+
+        let compile_result = compile_semantic(&src);
+        let actual = if compile_result.is_ok() { 0 } else { -1 };
+
+        if actual == expected {
+            passed += 1;
+            passed_cases.push(name);
+        } else {
+            let error_msg = match compile_result {
+                Ok(_) => format!("expected {expected}, got {actual}"),
+                Err(err) => err,
+            };
+            failed_cases.push((name, expected, actual, error_msg));
+        }
+    }
+
+    println!("Semantic tests: {passed}/{total} passed");
+
+    if !passed_cases.is_empty() {
+        println!("Passed cases:");
+        for name in &passed_cases {
+            println!("  ✓ {name}");
+        }
+        println!();
+    }
+
+    if !failed_cases.is_empty() {
+        println!("Failed cases:");
+        for (name, exp, act, msg) in &failed_cases {
+            println!("  ✗ {name}: expected {exp}, got {act}\n    error: {msg}");
+        }
+        let total_duration = start_time.elapsed();
+        eprintln!(
+            "Total test time: {:.3}ms",
+            total_duration.as_secs_f64() * 1000.0
+        );
+        return 1;
+    }
+
     let total_duration = start_time.elapsed();
     eprintln!(
         "Total test time: {:.3}ms",

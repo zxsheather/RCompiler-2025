@@ -249,39 +249,60 @@ impl ConstFolder {
     }
 
     pub fn parse_int_literal(token: &Token) -> SemanticResult<(RxType, RxValue)> {
-        let ty = if token.lexeme.contains("isize") {
+        let mut clean = token.lexeme.replace('_', "");
+        let ty = if clean.ends_with("isize") {
+            clean.truncate(clean.len() - "isize".len());
             RxType::ISize
-        } else if token.lexeme.contains("usize") {
+        } else if clean.ends_with("usize") {
+            clean.truncate(clean.len() - "usize".len());
             RxType::USize
-        } else if token.lexeme.contains("u32") {
+        } else if clean.ends_with("u32") {
+            clean.truncate(clean.len() - "u32".len());
             RxType::U32
-        } else if token.lexeme.contains("i32") {
+        } else if clean.ends_with("i32") {
+            clean.truncate(clean.len() - "i32".len());
             RxType::I32
         } else {
             RxType::IntLiteral
         };
-        let mut clean = token.lexeme.replace('_', "");
-        for suf in ["isize", "usize", "u32", "i32"] {
-            if clean.ends_with(suf) {
-                clean = clean.trim_end_matches(suf).to_string();
-                break;
-            }
+
+        let (base, digits) = if clean.starts_with("0x") {
+            (16, &clean[2..])
+        } else if clean.starts_with("0b") {
+            (2, &clean[2..])
+        } else if clean.starts_with("0o") {
+            (8, &clean[2..])
+        } else {
+            (10, clean.as_str())
+        };
+
+        if digits.is_empty() {
+            return Err(SemanticError::InvalidConstExpr {
+                expr: token.lexeme.clone(),
+                line: token.position.line,
+                column: token.position.column,
+            });
         }
-        match ty {
-            RxType::I32 => clean.parse::<i32>().map(|v| (RxType::I32, RxValue::I32(v))),
-            RxType::U32 => clean.parse::<u32>().map(|v| (RxType::U32, RxValue::U32(v))),
-            RxType::ISize => clean
-                .parse::<isize>()
-                .map(|v| (RxType::ISize, RxValue::ISize(v))),
-            RxType::USize => clean
-                .parse::<usize>()
-                .map(|v| (RxType::USize, RxValue::USize(v))),
-            RxType::IntLiteral => clean
-                .parse::<i64>()
+
+        let parse_result = match ty {
+            RxType::I32 => {
+                i32::from_str_radix(digits, base).map(|v| (RxType::I32, RxValue::I32(v)))
+            }
+            RxType::U32 => {
+                u32::from_str_radix(digits, base).map(|v| (RxType::U32, RxValue::U32(v)))
+            }
+            RxType::ISize => {
+                isize::from_str_radix(digits, base).map(|v| (RxType::ISize, RxValue::ISize(v)))
+            }
+            RxType::USize => {
+                usize::from_str_radix(digits, base).map(|v| (RxType::USize, RxValue::USize(v)))
+            }
+            RxType::IntLiteral => i64::from_str_radix(digits, base)
                 .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v))),
             _ => unreachable!(),
-        }
-        .map_err(|_| SemanticError::InvalidConstExpr {
+        };
+
+        parse_result.map_err(|_| SemanticError::InvalidConstExpr {
             expr: token.lexeme.clone(),
             line: token.position.line,
             column: token.position.column,

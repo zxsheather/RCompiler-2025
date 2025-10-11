@@ -36,6 +36,20 @@ fn const_expr_ok() {
     }
 }
 
+#[test]
+fn const_prefixed_integer_literals_ok() {
+    let src = r#"fn main() {
+        const HEX_UNTYPED: i32 = 0x7F;
+        const HEX_TYPED: i32 = 0x80i32;
+        const BIN_TYPED: u32 = 0b1010u32;
+        const OCT_TYPED: usize = 0o755usize;
+    }"#;
+    match analyze_src(src) {
+        Ok(_) => {}
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+}
+
 // === 错误用例 ===
 #[test]
 fn const_redeclare_error() {
