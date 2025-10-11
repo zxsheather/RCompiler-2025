@@ -986,49 +986,9 @@ impl Analyzer {
                 }
             }
             ExpressionNode::IntegerLiteral(token, node_id) => {
-                let ty = if token.lexeme.contains("isize") {
-                    self.type_context.set_type(*node_id, RxType::ISize);
-                    RxType::ISize
-                } else if token.lexeme.contains("usize") {
-                    self.type_context.set_type(*node_id, RxType::USize);
-                    RxType::USize
-                } else if token.lexeme.contains("u32") {
-                    self.type_context.set_type(*node_id, RxType::U32);
-                    RxType::U32
-                } else if token.lexeme.contains("i32") {
-                    self.type_context.set_type(*node_id, RxType::I32);
-                    RxType::I32
-                } else {
-                    self.type_context.set_type(*node_id, RxType::IntLiteral);
-                    RxType::IntLiteral
-                };
-                let mut clean = token.lexeme.replace('_', "");
-                for suf in ["isize", "usize", "u32", "i32"] {
-                    if clean.ends_with(suf) {
-                        clean = clean.trim_end_matches(suf).to_string();
-                        break;
-                    }
-                }
-                let (tp, _) = match ty {
-                    RxType::I32 => clean.parse::<i32>().map(|v| (RxType::I32, RxValue::I32(v))),
-                    RxType::U32 => clean.parse::<u32>().map(|v| (RxType::U32, RxValue::U32(v))),
-                    RxType::ISize => clean
-                        .parse::<isize>()
-                        .map(|v| (RxType::ISize, RxValue::ISize(v))),
-                    RxType::USize => clean
-                        .parse::<usize>()
-                        .map(|v| (RxType::USize, RxValue::USize(v))),
-                    RxType::IntLiteral => clean
-                        .parse::<i64>()
-                        .map(|v| (RxType::IntLiteral, RxValue::IntLiteral(v))),
-                    _ => unreachable!(),
-                }
-                .map_err(|_| SemanticError::InvalidConstExpr {
-                    expr: token.lexeme.clone(),
-                    line: token.position.line,
-                    column: token.position.column,
-                })?;
-                Ok(tp)
+                let (ty, _) = ConstFolder::parse_int_literal(token)?;
+                self.type_context.set_type(*node_id, ty.clone());
+                Ok(ty)
             }
             ExpressionNode::StringLiteral(_, node_id) => {
                 self.type_context
@@ -1094,16 +1054,16 @@ impl Analyzer {
                 }
             }
             TokenType::Not => {
-                if rt != RxType::Bool {
+                if !matches!(rt, RxType::Bool) && !rt.is_integer() {
                     Err(SemanticError::InvalidUnaryOperandType {
-                        expected_type: "bool".to_string(),
+                        expected_type: "bool or numeric type".to_string(),
                         found_type: format!("{}", rt),
                         line: u.operator.position.line,
                         column: u.operator.position.column,
                     })
                 } else {
-                    self.type_context.set_type(u.node_id, RxType::Bool);
-                    Ok(RxType::Bool)
+                    self.type_context.set_type(u.node_id, rt.clone());
+                    Ok(rt)
                 }
             }
             _ => Err(SemanticError::UnsupportedUnaryOperation {
@@ -1123,7 +1083,7 @@ impl Analyzer {
         let line = b.operator.position.line;
         let column = b.operator.position.column;
         match op_token {
-            Plus | Minus | Mul | Div | Percent | And | Or | Xor | SL | SR => {
+            Plus | Minus | Mul | Div | Percent | And | Or | Xor => {
                 if !lt.is_integer() {
                     Err(SemanticError::ArityMismatch {
                         operator: op_token.as_str().to_string(),
@@ -1145,6 +1105,29 @@ impl Analyzer {
                             column,
                         })
                     }
+                }
+            }
+
+            SL | SR => {
+                if !lt.is_integer() {
+                    Err(SemanticError::ArityMismatch {
+                        operator: op_token.as_str().to_string(),
+                        expected_type: "numeric type".to_string(),
+                        found: lt,
+                        line,
+                        column,
+                    })
+                } else if !rt.is_integer() {
+                    Err(SemanticError::ArityMismatch {
+                        operator: op_token.as_str().to_string(),
+                        expected_type: "i32".to_string(),
+                        found: rt,
+                        line,
+                        column,
+                    })
+                } else {
+                    self.type_context.set_type(b.node_id, lt.clone());
+                    Ok(lt)
                 }
             }
 

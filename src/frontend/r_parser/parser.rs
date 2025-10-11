@@ -488,6 +488,9 @@ impl Parser {
             }
             TokenType::If => {
                 let expression = self.parse_if_expression()?;
+                if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                }
                 Ok(StatementNode::Expression(ExprStatementNode {
                     expression,
                     node_id: self.type_context.assign_node_id(),
@@ -495,6 +498,9 @@ impl Parser {
             }
             TokenType::While => {
                 let expression = self.parse_while_expression()?;
+                if self.check_type(&TokenType::Semicolon) {
+                    self.advance();
+                }
                 Ok(StatementNode::Expression(ExprStatementNode {
                     expression,
                     node_id: self.type_context.assign_node_id(),
