@@ -1,4 +1,5 @@
 mod frontend;
+mod middleend;
 
 use std::env;
 use std::fs;

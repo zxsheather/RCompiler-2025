@@ -127,6 +127,10 @@ impl TypeContext {
         self.const_items.insert(name.into(), (ty, value));
     }
 
+    pub fn get_const_value(&self, name: &str) -> Option<&(RxType, RxValue)> {
+        self.const_items.get(name)
+    }
+
     pub fn set_func_sig(
         &mut self,
         name: impl Into<String>,

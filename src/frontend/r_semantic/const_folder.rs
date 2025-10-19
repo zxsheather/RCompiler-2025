@@ -90,6 +90,7 @@ impl ConstFolder {
                         let vals = vec![elem_val; size_usize];
                         let ty = RxType::Array(Box::new(elem_ty.clone()), Some(size_usize));
                         type_context.set_type(*node_id, ty.clone());
+                        type_context.set_array_layout(*node_id, elem_ty.clone(), Some(size_usize));
                         Ok((ty, RxValue::Array(elem_ty, size_usize, vals)))
                     } else {
                         Err(SemanticError::InvalidConstExpr {
