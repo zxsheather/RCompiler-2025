@@ -103,6 +103,20 @@ pub enum IRInstructionKind {
         ty: IRType,
         incomings: Vec<(IRValue, String)>,
     },
+    Select {
+        cond: IRValue,
+        true_val: IRValue,
+        false_val: IRValue,
+    },
+    InsertValue {
+        aggregate: IRValue,
+        value: IRValue,
+        indices: Vec<usize>,
+    },
+    ExtractValue {
+        aggregate: IRValue,
+        indices: Vec<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -167,6 +181,12 @@ pub enum IRType {
     Ptr(Box<IRType>),
     Struct { fields: Vec<IRType> },
     Array { elem_type: Box<IRType>, size: usize },
+}
+
+impl IRType {
+    pub fn is_integer_type(&self) -> bool {
+        matches!(self, IRType::I1 | IRType::I8 | IRType::I32)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

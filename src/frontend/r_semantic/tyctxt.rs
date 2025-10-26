@@ -193,6 +193,10 @@ impl TypeContext {
         );
     }
 
+    pub fn get_static_method_ref(&self, node_id: NodeId) -> Option<&StaticMethodRef> {
+        self.static_method_refs.get(&node_id)
+    }
+
     pub fn get_static_method(
         &self,
         type_name: &str,

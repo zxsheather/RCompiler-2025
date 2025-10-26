@@ -2,9 +2,10 @@ use std::hint;
 
 use crate::{
     frontend::{
-        r_lexer::token,
+        r_lexer::token::{self, TokenType},
         r_parser::ast::{ArrayLiteralNode, ExpressionNode, FunctionNode, ParamNode, TypeNode},
         r_semantic::{
+            analyzer::SelfKind,
             const_folder::ConstFolder,
             tyctxt::{NodeId, TypeContext},
             types::{RxType, RxValue},
@@ -12,7 +13,7 @@ use crate::{
     },
     middleend::ir::{
         error::{LowerError, LowerResult},
-        module::{IRType, IRValue},
+        module::{IRBinaryOp, IRCastOp, IRICmpOp, IRType, IRValue},
     },
 };
 
@@ -100,6 +101,64 @@ pub fn rx_to_ir_type(type_ctx: &TypeContext, rx_type: &RxType) -> IRType {
     }
 }
 
+pub fn ir_const_from_rx(
+    type_ctx: &TypeContext,
+    ty: &RxType,
+    value: &RxValue,
+) -> LowerResult<IRValue> {
+    let ir_ty = rx_to_ir_type(type_ctx, ty);
+    let int_value = match ty {
+        RxType::Bool => match value {
+            RxValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported const value {:?} of type {:?}",
+                other, ty
+            ))),
+        },
+        RxType::Char => match value {
+            RxValue::Char(c) => Ok(*c as i64),
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported const value {:?} of type {:?}",
+                other, ty
+            ))),
+        },
+        RxType::I32 | RxType::IntLiteral | RxType::MainReturn | RxType::ISize => match value {
+            RxValue::I32(v) => Ok(*v as i64),
+            RxValue::U32(v) => Ok(*v as i64),
+            RxValue::ISize(v) => Ok(*v as i64),
+            RxValue::USize(v) => Ok(*v as i64),
+            RxValue::IntLiteral(v) => Ok(*v),
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported const value {:?} of type {:?}",
+                other, ty
+            ))),
+        },
+        RxType::USize | RxType::U32 => match value {
+            RxValue::USize(v) => Ok(*v as i64),
+            RxValue::U32(v) => Ok(*v as i64),
+            RxValue::IntLiteral(v) => match value {
+                RxValue::IntLiteral(v) if *v >= 0 => Ok(*v),
+                other => Err(LowerError::UnsupportedExpression(format!(
+                    "unsupported const value {:?} of type {:?}",
+                    other, ty
+                ))),
+            },
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported const value {:?} of type {:?}",
+                other, ty
+            ))),
+        },
+        other_ty => Err(LowerError::UnsupportedExpression(format!(
+            "unsupported const type {:?}",
+            other_ty
+        ))),
+    }?;
+    Ok(IRValue::ConstInt {
+        value: int_value,
+        ty: ir_ty,
+    })
+}
+
 pub fn ir_type_for_string() -> IRType {
     IRType::Struct {
         fields: vec![ir_type_for_str(), IRType::I32],
@@ -131,6 +190,15 @@ pub fn ir_type_for_array(
     }
     // Use ptr for unsized array
     Some(IRType::Ptr(Box::new(elem)))
+}
+
+pub fn ir_type_hint_from_rx(type_ctx: &TypeContext, rx_type: &RxType) -> Option<IRType> {
+    let ir_ty = rx_to_ir_type(type_ctx, rx_type);
+    if matches!(ir_ty, IRType::Void) {
+        None
+    } else {
+        Some(ir_ty)
+    }
 }
 
 pub fn array_length_from_expr(type_ctx: &TypeContext, expr: &ExpressionNode) -> Option<usize> {
@@ -265,9 +333,124 @@ pub fn mangle_symbol_name(raw: &str) -> String {
     result
 }
 
+pub fn map_compound_binary_op(token: &TokenType) -> Option<IRBinaryOp> {
+    match token {
+        TokenType::PlusEq => Some(IRBinaryOp::Add),
+        TokenType::MinusEq => Some(IRBinaryOp::Sub),
+        TokenType::MulEq => Some(IRBinaryOp::Mul),
+        TokenType::DivEq => Some(IRBinaryOp::SDiv),
+        TokenType::ModEq => Some(IRBinaryOp::SRem),
+        TokenType::AndEq => Some(IRBinaryOp::And),
+        TokenType::OrEq => Some(IRBinaryOp::Or),
+        TokenType::XorEq => Some(IRBinaryOp::Xor),
+        TokenType::SLEq => Some(IRBinaryOp::Shl),
+        TokenType::SREq => Some(IRBinaryOp::AShr),
+        _ => None,
+    }
+}
+
+pub fn map_compare_op(token: &TokenType) -> Option<IRICmpOp> {
+    match token {
+        TokenType::EqEq => Some(IRICmpOp::Eq),
+        TokenType::NEq => Some(IRICmpOp::Ne),
+        TokenType::Lt => Some(IRICmpOp::Slt),
+        TokenType::LEq => Some(IRICmpOp::Sle),
+        TokenType::Gt => Some(IRICmpOp::Sgt),
+        TokenType::GEq => Some(IRICmpOp::Sge),
+        _ => None,
+    }
+}
+
+pub fn map_binary_op(token: &TokenType) -> Option<IRBinaryOp> {
+    match token {
+        TokenType::Plus => Some(IRBinaryOp::Add),
+        TokenType::Minus => Some(IRBinaryOp::Sub),
+        TokenType::Mul => Some(IRBinaryOp::Mul),
+        TokenType::Div => Some(IRBinaryOp::SDiv),
+        TokenType::Percent => Some(IRBinaryOp::SRem),
+        TokenType::And => Some(IRBinaryOp::And),
+        TokenType::Or => Some(IRBinaryOp::Or),
+        TokenType::Xor => Some(IRBinaryOp::Xor),
+        TokenType::SL => Some(IRBinaryOp::Shl),
+        TokenType::SR => Some(IRBinaryOp::AShr),
+        _ => None,
+    }
+}
+
+pub fn struct_ir_type(type_ctx: &TypeContext, name: &str) -> LowerResult<IRType> {
+    let layout = type_ctx.get_struct_layout(name).ok_or_else(|| {
+        LowerError::UnsupportedExpression(format!("unknown struct type '{}'", name))
+    })?;
+    let fields = layout
+        .fields
+        .iter()
+        .map(|field| rx_to_ir_type(type_ctx, &field.ty))
+        .collect();
+    Ok(IRType::Struct { fields })
+}
+
+pub fn determine_cast_op(from: &IRType, to: &IRType) -> LowerResult<Option<IRCastOp>> {
+    if from == to {
+        return Ok(None);
+    }
+
+    match (from, to) {
+        (IRType::Ptr(_), IRType::Ptr(_)) => Ok(Some(IRCastOp::BitCast)),
+        (IRType::Ptr(_), IRType::I32) => Ok(Some(IRCastOp::PtrToInt)),
+        (IRType::I32, IRType::Ptr(_)) => Ok(Some(IRCastOp::IntToPtr)),
+        _ => {
+            if let (Some(from_bits), Some(to_bits)) = (int_bit_width(from), int_bit_width(to)) {
+                if from_bits > to_bits {
+                    Ok(Some(IRCastOp::Trunc))
+                } else if from_bits < to_bits {
+                    Ok(Some(IRCastOp::ZExt))
+                } else {
+                    Ok(None) // Should not reach here
+                }
+            } else {
+                Err(LowerError::UnsupportedCast(format!(
+                    "cannot cast from {:?} to {:?}",
+                    from, to
+                )))
+            }
+        }
+    }
+}
+
 pub fn const_i32(value: i64) -> IRValue {
     IRValue::ConstInt {
         value,
         ty: IRType::I32,
+    }
+}
+
+pub fn is_unsigned_integer_type(ty: &RxType) -> bool {
+    matches!(ty, RxType::U32 | RxType::USize)
+}
+
+pub fn array_length_from_type(ty: &RxType) -> Option<usize> {
+    match ty {
+        RxType::Array(_, Some(size)) => Some(*size),
+        RxType::Ref(inner, _) => array_length_from_type(inner),
+        _ => None,
+    }
+}
+
+pub fn resolve_method_self_type(self_kind: &SelfKind, obj_ty: &RxType) -> RxType {
+    fn strip_ref(rx: &RxType) -> RxType {
+        match rx {
+            RxType::Ref(inner, _) => strip_ref(inner),
+            other => other.clone(),
+        }
+    }
+
+    match self_kind {
+        SelfKind::Owned { ty } => ty.clone(),
+        SelfKind::Borrowed { ty } => RxType::Ref(Box::new(ty.clone()), false),
+        SelfKind::BorrowedMut { ty } => RxType::Ref(Box::new(ty.clone()), true),
+        SelfKind::TraitOwned => strip_ref(obj_ty),
+        SelfKind::TraitBorrowed => RxType::Ref(Box::new(strip_ref(obj_ty)), false),
+        SelfKind::TraitBorrowedMut => RxType::Ref(Box::new(strip_ref(obj_ty)), true),
+        SelfKind::None => obj_ty.clone(),
     }
 }

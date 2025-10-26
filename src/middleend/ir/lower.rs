@@ -1,32 +1,49 @@
-use std::collections::{HashMap, HashSet};
+use core::alloc;
+use std::{
+    clone,
+    collections::{HashMap, HashSet, hash_map::Values},
+    io::IntoInnerError,
+    os::macos::raw,
+    result,
+};
+
+use regex::Match;
 
 use crate::{
     frontend::{
         r_lexer::token::{self, TokenType},
         r_parser::ast::{
-            ArrayLiteralNode, AssignStatementNode, AstNode, BlockNode, ElseBodyNode,
-            ExpressionNode, FunctionNode, IfExprNode, LetStatementNode, StatementNode,
-            StructLiteralNode,
+            ArrayLiteralNode, AsExprNode, AssignStatementNode, AstNode, BinaryExprNode, BlockNode,
+            BreakExprNode, CallExprNode, ConstItemNode, ContinueExprNode, DerefExprNode,
+            ElseBodyNode, ExpressionNode, FunctionNode, IfExprNode, IndexExprNode,
+            LetStatementNode, LoopExprNode, MemberExprNode, MethodCallExprNode, RefExprNode,
+            ReturnExprNode, StatementNode, StructLiteralNode, UnaryExprNode, WhileExprNode,
         },
         r_semantic::{
             analyzer::SelfKind,
+            built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
             tyctxt::{self, NodeId, TypeContext},
             types::RxType,
         },
     },
     middleend::ir::{
+        builtins::build_builtin_lowering,
         error::{LowerError, LowerResult},
         module::{
-            IRBasicBlock, IRFunction, IRInstruction, IRInstructionKind, IRNode, IRType, IRValue,
+            CallTarget, IRBasicBlock, IRBinaryOp, IRCastOp, IRFunction, IRICmpOp, IRInstruction,
+            IRInstructionKind, IRModule, IRNode, IRType, IRValue,
         },
         utils::{
-            const_i32, convert_type_node, derive_param_ir_type, determine_return_type,
-            expression_node_id, func_sig_hints, mangle_symbol_name, rx_to_ir_type,
+            array_length_from_type, const_i32, convert_type_node, derive_param_ir_type,
+            determine_cast_op, determine_return_type, expression_node_id, func_sig_hints,
+            ir_const_from_rx, ir_type_hint_from_rx, is_unsigned_integer_type, mangle_symbol_name,
+            map_binary_op, map_compare_op, map_compound_binary_op, resolve_method_self_type,
+            rx_to_ir_type, struct_ir_type,
         },
     },
 };
 
-const ENTRY_BLOCK_LABEL: &str = "entry";
+pub const ENTRY_BLOCK_LABEL: &str = "entry";
 
 pub struct Lower<'a> {
     nodes: &'a [AstNode],
@@ -38,7 +55,7 @@ impl<'a> Lower<'a> {
         Self { nodes, type_ctx }
     }
 
-    pub fn lower_program(&self, module_name: &str) -> LowerResult<()> {
+    pub fn lower_program(&self, module_name: &str) -> LowerResult<IRModule> {
         // Implement the lowering logic here
         let mut funcs = Vec::new();
         let mut defined_symbols = HashSet::new();
@@ -163,7 +180,110 @@ impl<'a> Lower<'a> {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(IRModule {
+            name: module_name.to_string(),
+            funcs,
+        })
+    }
+
+    pub fn append_builtin_declarations(
+        &self,
+        funcs: &mut Vec<IRFunction>,
+        defined_symbols: &HashSet<String>,
+    ) {
+        let builtin_lowering = build_builtin_lowering(self.type_ctx, defined_symbols);
+        let mut synthesized = HashSet::new();
+
+        for builtin in builtin_lowering.functions {
+            synthesized.insert(builtin.name.clone());
+            if defined_symbols.contains(&builtin.name) {
+                continue;
+            }
+            funcs.push(builtin);
+        }
+
+        for (name, _) in get_built_in_funcs() {
+            let ir_name = mangle_symbol_name(name);
+            if synthesized.contains(&ir_name) || defined_symbols.contains(&ir_name) {
+                continue;
+            }
+            if let Some(sig) = self.type_ctx.get_function(name) {
+                let params = sig
+                    .params()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, rx)| (format!("arg{idx}"), rx_to_ir_type(self.type_ctx, rx)))
+                    .collect();
+                let return_type = rx_to_ir_type(self.type_ctx, sig.return_type());
+                let ir_func = IRFunction {
+                    name: ir_name,
+                    params,
+                    return_type,
+                    basic_blocks: Vec::new(),
+                };
+                funcs.push(ir_func);
+            }
+        }
+
+        for (type_name, method_name, _) in get_built_in_methods() {
+            let raw_name = format!("{}::{}", type_name, method_name);
+            let ir_name = mangle_symbol_name(&raw_name);
+            if defined_symbols.contains(&ir_name) || synthesized.contains(&ir_name) {
+                continue;
+            }
+            if let Some(sig) = self.type_ctx.get_method(type_name, method_name) {
+                let mut params = Vec::with_capacity(1 + sig.params().len());
+                let base_ty = match &sig.self_kind {
+                    SelfKind::Owned { ty }
+                    | SelfKind::Borrowed { ty }
+                    | SelfKind::BorrowedMut { ty } => ty.clone(),
+                    SelfKind::TraitOwned
+                    | SelfKind::TraitBorrowed
+                    | SelfKind::TraitBorrowedMut
+                    | SelfKind::None => RxType::Struct(type_name.to_string()),
+                };
+                let self_rx = match &sig.self_kind {
+                    SelfKind::Borrowed { .. } => RxType::Ref(Box::new(base_ty.clone()), false),
+                    SelfKind::BorrowedMut { .. } => RxType::Ref(Box::new(base_ty.clone()), true),
+                    _ => base_ty,
+                };
+                params.push(("self".to_string(), rx_to_ir_type(self.type_ctx, &self_rx)));
+                for (idx, rx) in sig.params().iter().enumerate() {
+                    params.push((format!("arg{}", idx), rx_to_ir_type(self.type_ctx, rx)));
+                }
+
+                let return_type = rx_to_ir_type(self.type_ctx, sig.return_type());
+                funcs.push(IRFunction {
+                    name: ir_name,
+                    params,
+                    return_type,
+                    basic_blocks: Vec::new(),
+                });
+            }
+        }
+
+        for (type_name, method_name, _) in get_built_in_static_methods() {
+            let raw_name = format!("{}::{}", type_name, method_name);
+            let ir_name = mangle_symbol_name(&raw_name);
+            if defined_symbols.contains(&ir_name) || synthesized.contains(&ir_name) {
+                continue;
+            }
+            if let Some(sig) = self.type_ctx.get_method(type_name, method_name) {
+                let params = sig
+                    .params()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, rx)| (format!("arg{idx}"), rx_to_ir_type(self.type_ctx, rx)))
+                    .collect();
+                let return_type = rx_to_ir_type(self.type_ctx, sig.return_type());
+                funcs.push(IRFunction {
+                    name: ir_name,
+                    params,
+                    return_type,
+                    basic_blocks: Vec::new(),
+                });
+            }
+        }
     }
 
     pub fn lower_function_with_nested(
@@ -550,6 +670,31 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn lower_statement(&mut self, stmt: &StatementNode) -> LowerResult<()> {
+        match stmt {
+            StatementNode::Let(node) => self.lower_let(node.clone()),
+            StatementNode::Assign(node) => self.lower_assign(node),
+            StatementNode::Expression(expr_stmt) => {
+                self.lower_expression(&expr_stmt.expression)?;
+                Ok(())
+            }
+            StatementNode::Block(block) => {
+                self.lower_block(block)?;
+                Ok(())
+            }
+            StatementNode::Const(node) => self.lower_const(node),
+            StatementNode::Func(_) | StatementNode::Struct(_) => Ok(()),
+        }
+    }
+
+    pub fn lower_const(&mut self, node: &ConstItemNode) -> LowerResult<()> {
+        if let Some((rx_ty, rx_value)) = self.type_ctx.get_const_value(&node.name.lexeme) {
+            let const_val = ir_const_from_rx(self.type_ctx, rx_ty, rx_value)?;
+            self.bind_value(node.name.lexeme.clone(), Binding::Value(const_val));
+            return Ok(());
+        }
+
+        let value = self.lower_expression(&node.value)?;
+        self.bind_value(node.name.lexeme.clone(), Binding::Value(value));
         Ok(())
     }
 
@@ -610,11 +755,1133 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn lower_assign(&mut self, node: &AssignStatementNode) -> LowerResult<()> {
+        let target = self
+            .lookup_binding(&node.identifier.lexeme)
+            .ok_or_else(|| LowerError::UndefinedIdentifier(node.identifier.lexeme.clone()))?;
+        let Binding::Pointer(ptr) = target else {
+            return Err(LowerError::ImmutableBinding(node.identifier.lexeme.clone()));
+        };
+        if !self.store_literal_into_pointer(&ptr, &node.value)? {
+            let value = self.lower_expression(&node.value)?;
+            self.emit_store(value, ptr.clone())?;
+        }
         Ok(())
     }
 
     pub fn lower_expression(&mut self, expr: &ExpressionNode) -> LowerResult<IRValue> {
-        Ok(IRValue::ConstNull(IRType::I32))
+        if self.has_terminated() {
+            return Ok(IRValue::Undef(IRType::Void));
+        }
+
+        match expr {
+            ExpressionNode::IntegerLiteral(token, node_id) => {
+                self.lower_int_literal(token, *node_id)
+            }
+            ExpressionNode::BoolLiteral(token, node_id) => self.lower_bool_literal(token, *node_id),
+            ExpressionNode::Identifier(token, node_id) => self.lower_identifier(token, *node_id),
+            ExpressionNode::Binary(node) => self.lower_binary(node),
+            ExpressionNode::Unary(node) => self.lower_unary(node),
+            ExpressionNode::Member(member) => self.lower_member_expr(member),
+            ExpressionNode::Index(index) => self.lower_index_expr(index),
+            ExpressionNode::StructLiteral(literal) => self.lower_struct_literal_expr(literal),
+            ExpressionNode::ArrayLiteral(literal) => self.lower_array_literal_expr(literal),
+            ExpressionNode::Deref(node) => self.lower_deref_expr(node),
+            ExpressionNode::Ref(node) => self.lower_ref_expr(node),
+            ExpressionNode::Call(call) => self.lower_call_expr(call),
+            ExpressionNode::MethodCall(call) => self.lower_method_call_expr(call),
+            ExpressionNode::Block(block) => {
+                let value = self.lower_block(block)?;
+                Ok(value.unwrap_or(IRValue::Undef(IRType::Void)))
+            }
+            ExpressionNode::If(node) => self.lower_if_expr(node),
+            ExpressionNode::While(node) => self.lower_while_expr(node),
+            ExpressionNode::Loop(node) => self.lower_loop_expr(node),
+            ExpressionNode::Break(node) => self.lower_break_expr(node),
+            ExpressionNode::Continue(node) => self.lower_continue_expr(node),
+            ExpressionNode::Return(node) => {
+                self.lower_return(node)?;
+                Ok(IRValue::Undef(IRType::Void))
+            }
+            ExpressionNode::As(node) => self.lower_as_expr(node),
+            _ => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported expression: {:?}",
+                expr
+            ))),
+        }
+    }
+
+    pub fn lower_int_literal(
+        &mut self,
+        token: &token::Token,
+        node_id: NodeId,
+    ) -> LowerResult<IRValue> {
+        let ty = match self.node_value_type(node_id) {
+            Ok(Some(ty)) => ty,
+            Err(LowerError::MissingType(_)) | Ok(None) => IRType::I32,
+            Err(e) => return Err(e),
+        };
+        let mut lexeme = token.lexeme.replace('_', "");
+        for suffix in ["isize", "usize", "i32", "u32"] {
+            if lexeme.ends_with(suffix) {
+                lexeme = lexeme.trim_end_matches(suffix).to_string();
+                break;
+            }
+        }
+        let (base, digits) = if lexeme.starts_with("0x") {
+            (16, &lexeme[2..])
+        } else if lexeme.starts_with("0b") {
+            (2, &lexeme[2..])
+        } else if lexeme.starts_with("0o") {
+            (8, &lexeme[2..])
+        } else {
+            (10, &lexeme[..])
+        };
+        if digits.is_empty() {
+            return Err(LowerError::IntegerLiteral(token.lexeme.clone()));
+        }
+        let value = i64::from_str_radix(digits, base)
+            .map_err(|_| LowerError::IntegerLiteral(token.lexeme.clone()))?;
+        Ok(IRValue::ConstInt { value, ty })
+    }
+
+    pub fn lower_bool_literal(
+        &mut self,
+        token: &token::Token,
+        node_id: NodeId,
+    ) -> LowerResult<IRValue> {
+        let ty = match self.node_value_type(node_id) {
+            Ok(Some(t)) => t,
+            Ok(None) | Err(LowerError::MissingType(_)) => IRType::I1,
+            Err(e) => return Err(e),
+        };
+        let value = match token.token_type {
+            TokenType::True => 1,
+            TokenType::False => 0,
+            _ => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "invalid boolean literal: {}",
+                    token.lexeme
+                )));
+            }
+        };
+        Ok(IRValue::ConstInt { value, ty })
+    }
+
+    pub fn lower_identifier(
+        &mut self,
+        token: &token::Token,
+        node_id: NodeId,
+    ) -> LowerResult<IRValue> {
+        if let Some(binding) = self.lookup_binding(&token.lexeme) {
+            return match binding {
+                Binding::Value(val) => Ok(val),
+                Binding::Pointer(ptr) => {
+                    let result_ty = match self.node_value_type(node_id) {
+                        Ok(Some(ty)) => ty,
+                        Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
+                            IRType::Ptr(inner) => inner.as_ref().clone(),
+                            other => {
+                                return Err(LowerError::UnsupportedExpression(format!(
+                                    "cannot load from non-pointer binding {:?}",
+                                    other
+                                )));
+                            }
+                        },
+                        Err(e) => return Err(e),
+                    };
+                    let load = self
+                        .emit_value_instr(IRInstructionKind::Load { ptr, align: None }, result_ty);
+                    Ok(load)
+                }
+            };
+        }
+        if let Some((rx_ty, rx_value)) = self.type_ctx.get_const_value(&token.lexeme) {
+            return ir_const_from_rx(self.type_ctx, rx_ty, rx_value);
+        }
+        Err(LowerError::UndefinedIdentifier(token.lexeme.clone()))
+    }
+
+    pub fn lower_binary(&mut self, node: &BinaryExprNode) -> LowerResult<IRValue> {
+        match node.operator.token_type {
+            TokenType::Eq => {
+                return self.lower_expr_assign(
+                    node.node_id,
+                    &node.left_operand,
+                    &node.right_operand,
+                );
+            }
+            TokenType::And | TokenType::Or => {
+                let is_or = matches!(node.operator.token_type, TokenType::Or);
+                return self.lower_short_circuit(
+                    node.node_id,
+                    &node.left_operand,
+                    &node.right_operand,
+                    is_or,
+                );
+            }
+            _ => {}
+        }
+        if let Some(op) = map_compound_binary_op(&node.operator.token_type) {
+            let op = self.adjust_binary_op(op, node.node_id);
+            return self.lower_compound_assign(
+                node.node_id,
+                &node.left_operand,
+                &node.right_operand,
+                op,
+            );
+        }
+        if let Some(op) = map_compare_op(&node.operator.token_type) {
+            let lhs = self.lower_expression(&node.left_operand)?;
+            let rhs = self.lower_expression(&node.right_operand)?;
+            let result_ty = match self.node_value_type(node.node_id) {
+                Ok(Some(ty)) => ty,
+                Ok(None) => IRType::I1,
+                Err(e) => return Err(e),
+            };
+            let op = self.adjust_compare_op(op, &node.operator.token_type, &node.left_operand);
+            let cmp = self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, result_ty);
+            return Ok(cmp);
+        }
+        let op = map_binary_op(&node.operator.token_type).ok_or_else(|| {
+            LowerError::UnsupportedExpression(format!(
+                "unsupported binary operator: {:?}",
+                node.operator.token_type
+            ))
+        })?;
+        let op = self.adjust_binary_op(op, node.node_id);
+        let lhs = self.lower_expression(&node.left_operand)?;
+        let rhs = self.lower_expression(&node.right_operand)?;
+        let result_ty = match self.node_value_type(node.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => lhs.get_type(),
+            Err(e) => return Err(e),
+        };
+        let value = self.emit_value_instr(IRInstructionKind::Binary { op, lhs, rhs }, result_ty);
+        Ok(value)
+    }
+
+    pub fn lower_unary(&mut self, node: &UnaryExprNode) -> LowerResult<IRValue> {
+        let operand = self.lower_expression(&node.operand)?;
+        let result_ty = match self.node_value_type(node.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => operand.get_type(),
+            Err(e) => return Err(e),
+        };
+        match node.operator.token_type {
+            TokenType::Minus => {
+                if !result_ty.is_integer_type() {
+                    return Err(LowerError::TypeMismatch {
+                        expected: IRType::I32,
+                        found: operand.get_type(),
+                    });
+                }
+                let zero = IRValue::ConstInt {
+                    value: 0,
+                    ty: result_ty.clone(),
+                };
+                let value = self.emit_value_instr(
+                    IRInstructionKind::Binary {
+                        op: IRBinaryOp::Sub,
+                        lhs: zero,
+                        rhs: operand,
+                    },
+                    result_ty,
+                );
+                Ok(value)
+            }
+            TokenType::Not => match operand.get_type() {
+                IRType::I1 => {
+                    let one = IRValue::ConstInt {
+                        value: 1,
+                        ty: IRType::I1,
+                    };
+                    let value = self.emit_value_instr(
+                        IRInstructionKind::Binary {
+                            op: IRBinaryOp::Xor,
+                            lhs: operand,
+                            rhs: one,
+                        },
+                        IRType::I1,
+                    );
+                    Ok(value)
+                }
+                IRType::I8 | IRType::I32 => {
+                    let ty = operand.get_type();
+                    let mask = IRValue::ConstInt {
+                        value: -1,
+                        ty: ty.clone(),
+                    };
+                    let value = self.emit_value_instr(
+                        IRInstructionKind::Binary {
+                            op: IRBinaryOp::Xor,
+                            lhs: operand,
+                            rhs: mask,
+                        },
+                        ty,
+                    );
+                    Ok(value)
+                }
+                other => Err(LowerError::UnsupportedExpression(format!(
+                    "cannot apply 'not' operator to type {:?}",
+                    other
+                ))),
+            },
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "unsupported unary operator: {:?}",
+                other
+            ))),
+        }
+    }
+
+    pub fn lower_member_expr(&mut self, member: &MemberExprNode) -> LowerResult<IRValue> {
+        let field_ptr = self.lower_struct_field_ptr(member)?;
+        let result_ty = match self.node_value_type(member.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => match field_ptr.get_type() {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot load from non-pointer binding {:?}",
+                        other
+                    )));
+                }
+            },
+            Err(e) => return Err(e),
+        };
+        let value = self.emit_value_instr(
+            IRInstructionKind::Load {
+                ptr: field_ptr,
+                align: None,
+            },
+            result_ty,
+        );
+        Ok(value)
+    }
+
+    pub fn lower_index_expr(&mut self, index: &IndexExprNode) -> LowerResult<IRValue> {
+        let elem_ptr = self.lower_array_index_ptr(index)?;
+        let result_ty = match self.node_value_type(index.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => match elem_ptr.get_type() {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot load from non-pointer binding {:?}",
+                        other
+                    )));
+                }
+            },
+            Err(e) => return Err(e),
+        };
+        let value = self.emit_value_instr(
+            IRInstructionKind::Load {
+                ptr: elem_ptr,
+                align: None,
+            },
+            result_ty,
+        );
+        Ok(value)
+    }
+
+    pub fn lower_expr_assign(
+        &mut self,
+        node_id: NodeId,
+        left_operand: &ExpressionNode,
+        right_operand: &ExpressionNode,
+    ) -> LowerResult<IRValue> {
+        let ptr = self.lower_lvalue_pointer(left_operand)?;
+
+        if self.store_literal_into_pointer(&ptr, right_operand)? {
+            let load_ty = match ptr.get_type() {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot load from non-pointer binding {:?}",
+                        other
+                    )));
+                }
+            };
+            let value = self.emit_value_instr(
+                IRInstructionKind::Load {
+                    ptr: ptr.clone(),
+                    align: None,
+                },
+                load_ty,
+            );
+            return Ok(value);
+        }
+
+        let value = self.lower_expression(right_operand)?;
+        self.emit_store(value.clone(), ptr.clone())?;
+        if let Some(res_ty) = self.node_value_type(node_id)? {
+            if res_ty != value.get_type() {
+                let casted = self.emit_value_instr(
+                    IRInstructionKind::Cast {
+                        op: IRCastOp::BitCast,
+                        value: value.clone(),
+                        to_type: res_ty.clone(),
+                    },
+                    res_ty,
+                );
+                return Ok(casted);
+            }
+        }
+        Ok(value)
+    }
+
+    pub fn lower_struct_literal_expr(
+        &mut self,
+        literal: &StructLiteralNode,
+    ) -> LowerResult<IRValue> {
+        let res_ty = match self.node_value_type(literal.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => {
+                struct_ir_type(self.type_ctx, &literal.name.lexeme)?
+            }
+            Err(e) => return Err(e),
+        };
+        let layout = self
+            .type_ctx
+            .get_struct_layout(&literal.name.lexeme)
+            .ok_or_else(|| {
+                LowerError::UnsupportedExpression(format!(
+                    "unknown struct type: {}",
+                    &literal.name.lexeme
+                ))
+            })?;
+        let mut aggregate = IRValue::Undef(res_ty.clone());
+        for field in &literal.fields {
+            let field_name = field.name.lexeme.as_str();
+            let (index, field_layout) = layout
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, f)| f.name == field_name)
+                .ok_or_else(|| {
+                    LowerError::UnsupportedExpression(format!(
+                        "struct {} has no field named {}",
+                        &literal.name.lexeme, field_name
+                    ))
+                })?;
+
+            let mut field_value = self.lower_expression(&field.value)?;
+            let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
+            if field_value.get_type() != field_ty {
+                if matches!(field_value.get_type(), IRType::Ptr(_))
+                    && matches!(field_ty, IRType::Ptr(_))
+                {
+                    field_value = self.ensure_pointer_type(field_value, field_ty.clone());
+                }
+            }
+            aggregate = self.emit_value_instr(
+                IRInstructionKind::InsertValue {
+                    aggregate,
+                    value: field_value,
+                    indices: vec![index],
+                },
+                res_ty.clone(),
+            );
+        }
+        Ok(aggregate)
+    }
+
+    fn lower_array_literal_expr(&mut self, literal: &ArrayLiteralNode) -> LowerResult<IRValue> {
+        let node_id = match literal {
+            ArrayLiteralNode::Elements { node_id, .. } => *node_id,
+            ArrayLiteralNode::Repeated { node_id, .. } => *node_id,
+        };
+        let result_ty = match self.node_value_type(node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => {
+                let rx_ty = self.type_ctx.get_type(node_id).ok_or_else(|| {
+                    LowerError::UnsupportedExpression(
+                        "cannot determine array literal type".to_string(),
+                    )
+                })?;
+                rx_to_ir_type(self.type_ctx, &rx_ty)
+            }
+            Err(e) => return Err(e),
+        };
+        let (elem_ty, size) = match &result_ty {
+            IRType::Array { elem_type, size } => (elem_type.as_ref().clone(), *size),
+            other => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "expected array type for array literal, found {:?}",
+                    other
+                )));
+            }
+        };
+        let mut aggregate = IRValue::Undef(result_ty.clone());
+        match literal {
+            ArrayLiteralNode::Elements { elements, .. } => {
+                for (index, expr) in elements.iter().enumerate() {
+                    let mut value = self.lower_expression(expr)?;
+                    if value.get_type() != elem_ty {
+                        if matches!(value.get_type(), IRType::Ptr(_))
+                            && matches!(elem_ty, IRType::Ptr(_))
+                        {
+                            value = self.ensure_pointer_type(value, elem_ty.clone());
+                        }
+                    }
+                    aggregate = self.emit_value_instr(
+                        IRInstructionKind::InsertValue {
+                            aggregate,
+                            value,
+                            indices: vec![index],
+                        },
+                        result_ty.clone(),
+                    );
+                }
+            }
+            ArrayLiteralNode::Repeated { element, .. } => {
+                let mut cached_value: Option<IRValue> = None;
+                for index in 0..size {
+                    let mut value = if let Some(cached) = &cached_value {
+                        cached.clone()
+                    } else {
+                        let val = self.lower_expression(element)?;
+                        cached_value = Some(val.clone());
+                        val
+                    };
+                    if value.get_type() != elem_ty {
+                        if matches!(value.get_type(), IRType::Ptr(_))
+                            && matches!(elem_ty, IRType::Ptr(_))
+                        {
+                            value = self.ensure_pointer_type(value, elem_ty.clone());
+                        }
+                    }
+                    aggregate = self.emit_value_instr(
+                        IRInstructionKind::InsertValue {
+                            aggregate,
+                            value,
+                            indices: vec![index],
+                        },
+                        result_ty.clone(),
+                    );
+                }
+            }
+        }
+        Ok(aggregate)
+    }
+
+    pub fn lower_deref_expr(&mut self, node: &DerefExprNode) -> LowerResult<IRValue> {
+        let ptr = self.lower_expression(&node.operand)?;
+        let result_ty = match self.node_value_type(node.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot load from non-pointer binding {:?}",
+                        other
+                    )));
+                }
+            },
+            Err(e) => return Err(e),
+        };
+        let value = self.emit_value_instr(IRInstructionKind::Load { ptr, align: None }, result_ty);
+        Ok(value)
+    }
+
+    pub fn lower_ref_expr(&mut self, node: &RefExprNode) -> LowerResult<IRValue> {
+        let ptr = self.lower_lvalue_pointer(&node.operand)?;
+        let Some(res_ty) = self.node_value_type(node.node_id)? else {
+            return Err(LowerError::MissingType(node.node_id));
+        };
+        if ptr.get_type() != res_ty {
+            let casted = self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::BitCast,
+                    value: ptr.clone(),
+                    to_type: res_ty.clone(),
+                },
+                res_ty,
+            );
+            Ok(casted)
+        } else {
+            Ok(ptr)
+        }
+    }
+
+    pub fn lower_call_expr(&mut self, call: &CallExprNode) -> LowerResult<IRValue> {
+        let (callee, expected_params, return_hint) = match call.function.as_ref() {
+            ExpressionNode::Identifier(token, _) => {
+                let raw_name = token.lexeme.clone();
+                let sig = self.type_ctx.get_function(&raw_name);
+                let expected = sig.map(|s| s.params().len());
+                let return_hint =
+                    sig.and_then(|s| ir_type_hint_from_rx(self.type_ctx, s.return_type()));
+                let ir_name = mangle_symbol_name(&raw_name);
+                (CallTarget::Direct(ir_name), expected, return_hint)
+            }
+            ExpressionNode::StaticMember(sm) => {
+                let Some(meta) = self.type_ctx.get_static_method_ref(sm.node_id) else {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "unsolved static method {:?}",
+                        sm,
+                    )));
+                };
+                let sig = self
+                    .type_ctx
+                    .get_static_method(&meta.type_name, &meta.method_name);
+                let expected = sig.map(|s| s.params().len());
+                let return_hint =
+                    sig.and_then(|s| ir_type_hint_from_rx(self.type_ctx, s.return_type()));
+                let raw_name = format!("{}::{}", meta.type_name, meta.method_name);
+                let ir_name = mangle_symbol_name(&raw_name);
+                (CallTarget::Direct(ir_name), expected, return_hint)
+            }
+            other => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "unsupported callee expression: {:?}",
+                    other
+                )));
+            }
+        };
+        if let Some(exp) = expected_params {
+            if exp != call.args.len() {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "expected {} arguments but found {}",
+                    exp,
+                    call.args.len()
+                )));
+            }
+        }
+        let mut args = Vec::with_capacity(call.args.len());
+        for arg in &call.args {
+            args.push(self.lower_expression(arg)?);
+        }
+        let ret_ty = match self.node_value_type(call.node_id) {
+            Ok(ty) => ty,
+            Err(LowerError::MissingType(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let call_ty = ret_ty.or(return_hint);
+        if let Some(ty) = call_ty {
+            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+            Ok(value)
+        } else {
+            self.emit_void_instr(IRInstructionKind::Call { callee, args });
+            Ok(IRValue::Undef(IRType::Void))
+        }
+    }
+
+    fn lower_method_call_expr(&mut self, call: &MethodCallExprNode) -> LowerResult<IRValue> {
+        let object_id = expression_node_id(&call.object).ok_or_else(|| {
+            LowerError::UnsupportedExpression("invalid method call expression".to_string())
+        })?;
+        let obj_rx = self
+            .type_ctx
+            .get_type(object_id)
+            .cloned()
+            .ok_or_else(|| LowerError::MissingType(object_id))?;
+        let type_name = obj_rx.method_key();
+        if type_name.is_empty() {
+            return Err(LowerError::UnsupportedExpression(format!(
+                "type {:?} has no methods",
+                obj_rx
+            )));
+        }
+
+        let method_name = call.method.lexeme.clone();
+        let sig = self
+            .type_ctx
+            .get_method(&type_name, &method_name)
+            .ok_or_else(|| {
+                LowerError::UnsupportedExpression(format!(
+                    "type {} has no method named {}",
+                    type_name, method_name
+                ))
+            })?;
+
+        if type_name == "Array" && method_name == "len" {
+            if let Some(len) = array_length_from_type(&obj_rx).or_else(|| {
+                self.type_ctx
+                    .get_array_layout(object_id)
+                    .and_then(|layout| layout.size)
+            }) {
+                let ret_ty = rx_to_ir_type(self.type_ctx, sig.return_type());
+                return Ok(IRValue::ConstInt {
+                    value: len as i64,
+                    ty: ret_ty,
+                });
+            }
+        }
+
+        let expected_self_rx = resolve_method_self_type(&sig.self_kind, &obj_rx);
+        let receiver = self.prepare_method_receiver(&call.object, &expected_self_rx)?;
+        if call.args.len() != sig.params().len() {
+            return Err(LowerError::UnsupportedExpression(format!(
+                "expected {} arguments but found {}",
+                sig.params().len() - 1,
+                call.args.len()
+            )));
+        }
+
+        let mut args = Vec::with_capacity(call.args.len() + 1);
+        args.push(receiver);
+        for (arg_expr, param_ty) in call.args.iter().zip(sig.params()) {
+            let mut arg_val = self.lower_expression(arg_expr)?;
+            let expected_ir = rx_to_ir_type(self.type_ctx, param_ty);
+            if arg_val.get_type() != expected_ir {
+                if matches!(arg_val.get_type(), IRType::Ptr(_))
+                    && matches!(expected_ir, IRType::Ptr(_))
+                {
+                    arg_val = self.ensure_pointer_type(arg_val, expected_ir.clone());
+                }
+            }
+            args.push(arg_val);
+        }
+
+        let callee_symbol = mangle_symbol_name(&format!("{}::{}", type_name, method_name));
+        let callee = CallTarget::Direct(callee_symbol);
+        let res_ty = match self.node_value_type(call.node_id) {
+            Ok(Some(ty)) => Some(ty),
+            Ok(None) | Err(LowerError::MissingType(_)) => None,
+            Err(e) => return Err(e),
+        };
+        if let Some(ty) = res_ty {
+            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+            Ok(value)
+        } else {
+            self.emit_void_instr(IRInstructionKind::Call { callee, args });
+            Ok(IRValue::Undef(IRType::Void))
+        }
+    }
+
+    pub fn lower_compound_assign(
+        &mut self,
+        node_id: NodeId,
+        left_operand: &ExpressionNode,
+        right_operand: &ExpressionNode,
+        op: IRBinaryOp,
+    ) -> LowerResult<IRValue> {
+        let ptr = self.lower_lvalue_pointer(left_operand)?;
+        let value_ty = match self.expression_value_type(left_operand) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot load from non-pointer binding {:?}",
+                        other
+                    )));
+                }
+            },
+            Err(e) => return Err(e),
+        };
+        let current = self.emit_value_instr(
+            IRInstructionKind::Load {
+                ptr: ptr.clone(),
+                align: None,
+            },
+            value_ty.clone(),
+        );
+        let rhs = self.lower_expression(right_operand)?;
+        let res_ty = match self.node_value_type(node_id)? {
+            Some(ty) => ty,
+            None => value_ty.clone(),
+        };
+
+        let result = self.emit_value_instr(
+            IRInstructionKind::Binary {
+                op,
+                lhs: current,
+                rhs,
+            },
+            res_ty,
+        );
+
+        self.emit_store(result.clone(), ptr)?;
+        Ok(result)
+    }
+
+    pub fn lower_if_expr(&mut self, node: &IfExprNode) -> LowerResult<IRValue> {
+        let cond = self.lower_expression(&node.condition)?;
+        let bool_cond = match cond.get_type() {
+            IRType::I1 => cond,
+            other => {
+                return Err(LowerError::TypeMismatch {
+                    expected: IRType::I1,
+                    found: other,
+                });
+            }
+        };
+
+        let then_label = self.fresh_label("if_then");
+        let merge_label = self.fresh_label("if_merge");
+        let else_label = node
+            .else_block
+            .as_ref()
+            .map(|_| self.fresh_label("if_else"));
+
+        let false_label = else_label.clone().unwrap_or(merge_label.clone());
+        self.emit_void_instr(IRInstructionKind::CondBr {
+            cond: bool_cond,
+            then_dest: then_label.clone(),
+            else_dest: false_label.clone(),
+        });
+        self.start_new_block(then_label.clone());
+        let then_value = self.lower_block(&node.then_block)?;
+        if !self.has_terminated() {
+            self.emit_void_instr(IRInstructionKind::Br {
+                dest: merge_label.clone(),
+            });
+        }
+        let mut incoming = Vec::new();
+        if let Some(then_val) = then_value {
+            if then_val.get_type() != IRType::Void {
+                incoming.push((then_val, then_label.clone()));
+            }
+        }
+        if let Some(else_block) = &node.else_block {
+            let else_label = else_label.unwrap();
+            self.start_new_block(else_label.clone());
+            let else_value = match else_block {
+                ElseBodyNode::Block(block) => self.lower_block(block)?,
+                ElseBodyNode::If(if_expr) => Some(self.lower_if_expr(&if_expr)?),
+            };
+            let else_exit_label = self.current_block.label.clone();
+            if !self.has_terminated() {
+                self.emit_void_instr(IRInstructionKind::Br {
+                    dest: merge_label.clone(),
+                });
+            }
+            if let Some(else_val) = else_value {
+                if else_val.get_type() != IRType::Void {
+                    incoming.push((else_val, else_exit_label));
+                }
+            }
+        }
+
+        self.start_new_block(merge_label.clone());
+        if incoming.is_empty() {
+            Ok(IRValue::Undef(IRType::Void))
+        } else if incoming.len() == 1 {
+            Ok(incoming[0].0.clone())
+        } else {
+            let res_ty = incoming[0].0.get_type();
+            let phi = self.emit_value_instr(
+                IRInstructionKind::Phi {
+                    ty: res_ty.clone(),
+                    incomings: incoming,
+                },
+                res_ty,
+            );
+            Ok(phi)
+        }
+    }
+
+    pub fn lower_while_expr(&mut self, node: &WhileExprNode) -> LowerResult<IRValue> {
+        let cond_label = self.fresh_label("while_cond");
+        let body_label = self.fresh_label("while_body");
+        let exit_label = self.fresh_label("while_exit");
+
+        self.emit_void_instr(IRInstructionKind::Br {
+            dest: cond_label.clone(),
+        });
+        // Condition block
+        self.start_new_block(cond_label.clone());
+        let cond_val = self.lower_expression(&node.condition)?;
+        if cond_val.get_type() != IRType::I1 {
+            return Err(LowerError::TypeMismatch {
+                expected: IRType::I1,
+                found: cond_val.get_type(),
+            });
+        }
+        self.emit_void_instr(IRInstructionKind::CondBr {
+            cond: cond_val,
+            then_dest: body_label.clone(),
+            else_dest: exit_label.clone(),
+        });
+
+        // Body block
+        self.start_new_block(body_label.clone());
+        let loop_result_ty = self.node_value_type(node.node_id)?;
+        self.loop_stack.push(LoopFrame::new(
+            exit_label.clone(),
+            cond_label.clone(),
+            loop_result_ty,
+        ));
+        self.lower_block(&node.body)?;
+        if !self.has_terminated() {
+            self.emit_void_instr(IRInstructionKind::Br {
+                dest: cond_label.clone(),
+            });
+        }
+        let frame = self.loop_stack.pop().unwrap();
+
+        // Exit block
+        self.start_new_block(exit_label.clone());
+        let loop_value = self.finish_loop_value(frame);
+        Ok(loop_value)
+    }
+
+    pub fn lower_loop_expr(&mut self, node: &LoopExprNode) -> LowerResult<IRValue> {
+        let header_label = self.fresh_label("loop_header");
+        let body_label = self.fresh_label("loop_body");
+        let exit_label = self.fresh_label("loop_exit");
+
+        self.emit_void_instr(IRInstructionKind::Br {
+            dest: header_label.clone(),
+        });
+        // Header block
+        self.start_new_block(header_label.clone());
+        self.emit_void_instr(IRInstructionKind::Br {
+            dest: body_label.clone(),
+        });
+        // Body block
+        self.start_new_block(body_label.clone());
+        let loop_result_ty = self.node_value_type(node.node_id)?;
+        self.loop_stack.push(LoopFrame::new(
+            exit_label.clone(),
+            header_label.clone(),
+            loop_result_ty,
+        ));
+        self.lower_block(&node.body)?;
+        if !self.has_terminated() {
+            self.emit_void_instr(IRInstructionKind::Br {
+                dest: header_label.clone(),
+            });
+        }
+
+        let frame = self.loop_stack.pop().unwrap();
+        // Exit block
+        self.start_new_block(exit_label.clone());
+        let loop_value = self.finish_loop_value(frame);
+        Ok(loop_value)
+    }
+
+    pub fn lower_break_expr(&mut self, node: &BreakExprNode) -> LowerResult<IRValue> {
+        let (expected_ty, break_label) = {
+            let frame = self.loop_stack.last().ok_or_else(|| {
+                LowerError::UnsupportedExpression("break statement outside of loop".to_string())
+            })?;
+            (frame.result_ty.clone(), frame.break_label.clone())
+        };
+
+        let mut break_value = if let Some(expr) = &node.value {
+            let val = self.lower_expression(expr)?;
+            Some(val)
+        } else {
+            None
+        };
+
+        if let Some(ty) = &expected_ty {
+            if let Some(ref mut val) = break_value {
+                if val.get_type() != *ty {
+                    if matches!(val.get_type(), IRType::Ptr(_)) && matches!(ty, IRType::Ptr(_)) {
+                        *val = self.ensure_pointer_type(val.clone(), ty.clone());
+                    }
+                }
+            }
+        }
+
+        let origin_label = self.current_block.label.clone();
+        if let Some(frame) = self.loop_stack.last_mut() {
+            if let Some(result_ty) = &frame.result_ty {
+                let value = break_value
+                    .take()
+                    .unwrap_or_else(|| IRValue::Undef(result_ty.clone()));
+                frame.break_values.push((value, origin_label));
+            }
+        }
+        self.set_terminator(IRInstructionKind::Br { dest: break_label });
+        Ok(IRValue::Undef(IRType::Void))
+    }
+
+    pub fn lower_continue_expr(&mut self, _node: &ContinueExprNode) -> LowerResult<IRValue> {
+        let continue_label = {
+            let frame = self.loop_stack.last().ok_or_else(|| {
+                LowerError::UnsupportedExpression("continue statement outside of loop".to_string())
+            })?;
+            frame.continue_label.clone()
+        };
+        self.set_terminator(IRInstructionKind::Br {
+            dest: continue_label,
+        });
+        Ok(IRValue::Undef(IRType::Void))
+    }
+
+    pub fn lower_as_expr(&mut self, node: &AsExprNode) -> LowerResult<IRValue> {
+        let operand = self.lower_expression(&node.expr)?;
+        let res_ty = match self.node_value_type(node.node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) | Err(LowerError::MissingType(_)) => {
+                convert_type_node(self.type_ctx, &node.type_name)
+                    .unwrap_or_else(|| operand.get_type())
+            }
+            Err(e) => return Err(e),
+        };
+
+        if operand.get_type() == res_ty {
+            return Ok(operand);
+        }
+
+        match determine_cast_op(&operand.get_type(), &res_ty) {
+            Ok(Some(op)) => {
+                let casted = self.emit_value_instr(
+                    IRInstructionKind::Cast {
+                        op,
+                        value: operand,
+                        to_type: res_ty.clone(),
+                    },
+                    res_ty,
+                );
+                Ok(casted)
+            }
+            Ok(None) => Err(LowerError::UnsupportedExpression(format!(
+                "cannot cast from {:?} to {:?}",
+                operand.get_type(),
+                res_ty,
+            ))),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn finish_loop_value(&mut self, frame: LoopFrame) -> IRValue {
+        let LoopFrame {
+            result_ty,
+            break_values,
+            ..
+        } = frame;
+
+        match result_ty {
+            Some(ty) => {
+                if matches!(ty, IRType::Void) {
+                    IRValue::Undef(IRType::Void)
+                } else {
+                    if break_values.is_empty() {
+                        IRValue::Undef(ty)
+                    } else if break_values.len() == 1 {
+                        break_values[0].0.clone()
+                    } else {
+                        self.emit_value_instr(
+                            IRInstructionKind::Phi {
+                                ty: ty.clone(),
+                                incomings: break_values,
+                            },
+                            ty,
+                        )
+                    }
+                }
+            }
+            None => IRValue::Undef(IRType::Void),
+        }
+    }
+    pub fn lower_short_circuit(
+        &mut self,
+        node_id: NodeId,
+        left: &ExpressionNode,
+        right: &ExpressionNode,
+        is_or: bool,
+    ) -> LowerResult<IRValue> {
+        let left_val = self.lower_expression(left)?;
+        if left_val.get_type() != IRType::I1 {
+            return Err(LowerError::TypeMismatch {
+                expected: IRType::I1,
+                found: left_val.get_type(),
+            });
+        }
+        let rhs_label = self.fresh_label("rhs");
+        let merge_label = self.fresh_label("logic_merge");
+
+        let current_block_label = self.current_block.label.clone();
+        self.emit_void_instr(IRInstructionKind::CondBr {
+            cond: left_val.clone(),
+            then_dest: if is_or {
+                merge_label.clone()
+            } else {
+                rhs_label.clone()
+            },
+            else_dest: if is_or {
+                rhs_label.clone()
+            } else {
+                merge_label.clone()
+            },
+        });
+
+        // RHS block
+        self.start_new_block(rhs_label.clone());
+        let right_val = self.lower_expression(right)?;
+        if right_val.get_type() != IRType::I1 {
+            return Err(LowerError::TypeMismatch {
+                expected: IRType::I1,
+                found: right_val.get_type(),
+            });
+        }
+        if !self.has_terminated() {
+            self.emit_void_instr(IRInstructionKind::Br {
+                dest: merge_label.clone(),
+            });
+        }
+
+        // Merge block
+        self.start_new_block(merge_label.clone());
+
+        let res_ty = match self.node_value_type(node_id) {
+            Ok(Some(ty)) => ty,
+            Ok(None) => IRType::I1,
+            Err(e) => return Err(e),
+        };
+        let short_const = IRValue::ConstInt {
+            value: if is_or { 1 } else { 0 },
+            ty: res_ty.clone(),
+        };
+        let incoming_left = if is_or {
+            (short_const.clone(), current_block_label.clone())
+        } else {
+            (left_val.clone(), current_block_label.clone())
+        };
+        let incoming_right = (right_val.clone(), rhs_label.clone());
+        let phi = self.emit_value_instr(
+            IRInstructionKind::Phi {
+                ty: res_ty.clone(),
+                incomings: vec![incoming_left, incoming_right],
+            },
+            res_ty,
+        );
+
+        Ok(phi)
+    }
+
+    fn fresh_label(&mut self, prefix: &str) -> String {
+        let label = format!("{}_{}", prefix, self.temp_counter);
+        self.temp_counter += 1;
+        label
+    }
+
+    fn start_new_block(&mut self, label: String) {
+        let finished = std::mem::replace(
+            &mut self.current_block,
+            IRBasicBlock {
+                label,
+                instructions: Vec::new(),
+                terminator: None,
+            },
+        );
+        self.blocks.push(finished);
+    }
+
+    pub fn lower_return(&mut self, ret: &ReturnExprNode) -> LowerResult<()> {
+        if matches!(self.return_type, IRType::Void) {
+            if let Some(expr) = &ret.value {
+                self.lower_expression(expr)?;
+            }
+            self.emit_return(None);
+            return Ok(());
+        }
+
+        let value = if let Some(expr) = &ret.value {
+            self.lower_expression(expr)?
+        } else {
+            return Err(LowerError::MissingReturnValue(
+                self.func.name.lexeme.clone(),
+            ));
+        };
+        let coerced = self.coerce_to_return_type(value)?;
+        self.emit_return(Some(coerced));
+        Ok(())
     }
 
     pub fn store_literal_into_pointer(
@@ -813,8 +2080,34 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    pub fn block_uses_identifier(block: &BlockNode, name: &str) -> bool {
-        true
+    fn block_uses_identifier(block: &BlockNode, name: &str) -> bool {
+        for stmt in &block.stats {
+            if Self::statement_uses_identifier(stmt, name) {
+                return true;
+            }
+        }
+        if let Some(expr) = &block.final_expr {
+            return Self::expr_uses_identifier(expr, name);
+        }
+        false
+    }
+
+    fn statement_uses_identifier(stmt: &StatementNode, name: &str) -> bool {
+        match stmt {
+            StatementNode::Let(node) => node
+                .value
+                .as_ref()
+                .map_or(false, |expr| Self::expr_uses_identifier(expr, name)),
+            StatementNode::Assign(node) => {
+                node.identifier.lexeme == name || Self::expr_uses_identifier(&node.value, name)
+            }
+            StatementNode::Expression(expr_stmt) => {
+                Self::expr_uses_identifier(&expr_stmt.expression, name)
+            }
+            StatementNode::Block(block) => Self::block_uses_identifier(block, name),
+            StatementNode::Const(node) => Self::expr_uses_identifier(&node.value, name),
+            StatementNode::Func(_) | StatementNode::Struct(_) => false,
+        }
     }
 
     pub fn if_expr_uses_identifier(if_expr: &IfExprNode, name: &str) -> bool {
@@ -880,9 +2173,346 @@ impl<'a> FunctionBuilder<'a> {
         });
         Ok(())
     }
+    pub fn emit_return(&mut self, value: Option<IRValue>) {
+        let inst = IRInstruction {
+            result: None,
+            ty: value.as_ref().map(|v| v.get_type()),
+            kind: IRInstructionKind::Ret { value },
+            debug: None,
+        };
+        self.current_block.terminator = Some(inst);
+    }
     pub fn bind_value(&mut self, name: String, binding: Binding) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, binding);
+        }
+    }
+
+    pub fn rebind_value(&mut self, name: String, binding: Binding) {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(&name) {
+                scope.insert(name, binding);
+                return;
+            }
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name, binding);
+        }
+    }
+
+    pub fn lower_struct_field_ptr(&mut self, member: &MemberExprNode) -> LowerResult<IRValue> {
+        let object_ptr = self.lower_lvalue_pointer(&member.object)?;
+        let Some(object_id) = expression_node_id(&member.object) else {
+            return Err(LowerError::UnsupportedExpression(
+                "cannot determine struct type for member access".to_string(),
+            ));
+        };
+        let object_ty = self
+            .type_ctx
+            .get_type(object_id)
+            .ok_or(LowerError::MissingType(object_id))?;
+        let struct_name = match object_ty {
+            RxType::Struct(name) => name.clone(),
+            RxType::Ref(inner, _) => match inner.as_ref() {
+                RxType::Struct(name) => name.clone(),
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot access member of non-struct type: {:?}",
+                        other
+                    )));
+                }
+            },
+            other => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "cannot access member of non-struct type: {:?}",
+                    other
+                )));
+            }
+        };
+
+        let layout = self
+            .type_ctx
+            .get_struct_layout(&struct_name)
+            .ok_or_else(|| {
+                LowerError::UnsupportedExpression(format!("unknown struct type: {}", &struct_name))
+            })?;
+
+        let field_name = member.field.lexeme.as_str();
+        let (index, field_layout) = layout
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == field_name)
+            .ok_or_else(|| {
+                LowerError::UnsupportedExpression(format!(
+                    "struct {} has no field named {}",
+                    &struct_name, field_name
+                ))
+            })?;
+        let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
+        let (gep_base, _) = match object_ptr.get_type() {
+            IRType::Ptr(inner) => match inner.as_ref() {
+                IRType::Struct { .. } => Ok((object_ptr.clone(), inner.as_ref().clone())),
+                IRType::Ptr(pointee) => match pointee.as_ref() {
+                    IRType::Struct { .. } => {
+                        let loaded = self.emit_value_instr(
+                            IRInstructionKind::Load {
+                                ptr: object_ptr.clone(),
+                                align: None,
+                            },
+                            IRType::Ptr(pointee.clone()),
+                        );
+                        Ok((loaded, pointee.as_ref().clone()))
+                    }
+                    other => Err(LowerError::UnsupportedExpression(format!(
+                        "cannot access member of non-struct type: {:?}",
+                        other
+                    ))),
+                },
+                other => Err(LowerError::UnsupportedExpression(format!(
+                    "cannot access member of non-struct type: {:?}",
+                    other
+                ))),
+            },
+            other => Err(LowerError::UnsupportedExpression(format!(
+                "cannot access member of non-pointer type: {:?}",
+                other
+            ))),
+        }?;
+
+        let res_ty = IRType::Ptr(Box::new(field_ty));
+        let gep = self.emit_value_instr(
+            IRInstructionKind::GetElementPtr {
+                base: gep_base,
+                indices: vec![const_i32(0), const_i32(index as i64)],
+                in_bounds: true,
+            },
+            res_ty,
+        );
+        Ok(gep)
+    }
+    fn coerce_to_return_type(&mut self, value: IRValue) -> LowerResult<IRValue> {
+        if value.get_type() == self.return_type {
+            return Ok(value);
+        }
+
+        let expected = self.return_type.clone();
+        let value_ty = value.get_type().clone();
+        if matches!(value_ty, IRType::Ptr(_)) && matches!(expected, IRType::Ptr(_)) {
+            Ok(self.ensure_pointer_type(value, expected))
+        } else if matches!(value_ty, IRType::Void) {
+            Ok(IRValue::Undef(expected))
+        } else {
+            match determine_cast_op(&value_ty, &expected) {
+                Ok(Some(op)) => Ok(self.emit_value_instr(
+                    IRInstructionKind::Cast {
+                        op,
+                        value,
+                        to_type: expected.clone(),
+                    },
+                    expected,
+                )),
+                Ok(None) => Ok(value),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    // Lower an expression expected to yield an lvalue pointer
+    // return the pointer to the lvalue
+    pub fn lower_lvalue_pointer(&mut self, expr: &ExpressionNode) -> LowerResult<IRValue> {
+        match expr {
+            ExpressionNode::Identifier(token, _) => {
+                let binding = self
+                    .lookup_binding(&token.lexeme)
+                    .ok_or_else(|| LowerError::UndefinedIdentifier(token.lexeme.clone()))?;
+                match binding {
+                    Binding::Pointer(ptr) => Ok(ptr),
+                    Binding::Value(val) => match val.get_type() {
+                        IRType::Ptr(_) => Ok(val),
+                        IRType::Struct { .. } | IRType::Array { .. } => {
+                            let ty = val.get_type();
+                            let ptr_ty = IRType::Ptr(Box::new(ty.clone()));
+                            let alloca = self.emit_value_instr(
+                                IRInstructionKind::Alloca {
+                                    alloc_type: ty,
+                                    align: None,
+                                },
+                                ptr_ty.clone(),
+                            );
+                            self.emit_store(val.clone(), alloca.clone())?;
+                            self.rebind_value(
+                                token.lexeme.clone(),
+                                Binding::Pointer(alloca.clone()),
+                            );
+                            Ok(alloca)
+                        }
+                        _ => Err(LowerError::ImmutableBinding(token.lexeme.clone())),
+                    },
+                }
+            }
+            ExpressionNode::Member(member) => self.lower_struct_field_ptr(member),
+            ExpressionNode::Index(index) => self.lower_array_index_ptr(index),
+            _ => Err(LowerError::UnsupportedExpression(
+                "expression is not an lvalue".to_string(),
+            )),
+        }
+    }
+
+    pub fn lower_array_index_ptr(&mut self, index: &IndexExprNode) -> LowerResult<IRValue> {
+        let base_ptr = self.lower_lvalue_pointer(&index.array)?;
+        let index_val = self.lower_expression(&index.index)?;
+        let Some(array_id) = expression_node_id(&index.array) else {
+            return Err(LowerError::UnsupportedExpression(
+                "cannot determine array type for indexing".to_string(),
+            ));
+        };
+
+        let element_ty = if let Some(array_layout) = self.type_ctx.get_array_layout(array_id) {
+            array_layout.elem_type.clone()
+        } else {
+            let array_ty = self
+                .type_ctx
+                .get_type(array_id)
+                .ok_or(LowerError::MissingType(array_id))?;
+            match array_ty {
+                RxType::Array(elem, _) => elem.as_ref().clone(),
+                RxType::Ref(inner, _) => match inner.as_ref() {
+                    RxType::Array(elem, _) => elem.as_ref().clone(),
+                    other => {
+                        return Err(LowerError::UnsupportedExpression(format!(
+                            "cannot index into non-array type: {:?}",
+                            other
+                        )));
+                    }
+                },
+                other => {
+                    return Err(LowerError::UnsupportedExpression(format!(
+                        "cannot index into non-array type: {:?}",
+                        other
+                    )));
+                }
+            }
+        };
+        let elem_ir_ty = rx_to_ir_type(self.type_ctx, &element_ty);
+        let base_ty = base_ptr.get_type();
+        let indices = match base_ty {
+            IRType::Ptr(inner) => match inner.as_ref() {
+                IRType::Array { .. } => vec![const_i32(0), index_val.clone()],
+                _ => vec![index_val.clone()],
+            },
+            other => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "cannot index into non-pointer type: {:?}",
+                    other
+                )));
+            }
+        };
+        let res_ty = IRType::Ptr(Box::new(elem_ir_ty));
+        let gep = self.emit_value_instr(
+            IRInstructionKind::GetElementPtr {
+                base: base_ptr,
+                indices,
+                in_bounds: true,
+            },
+            res_ty,
+        );
+        Ok(gep)
+    }
+
+    fn prepare_method_receiver(
+        &mut self,
+        object: &ExpressionNode,
+        expected_rx: &RxType,
+    ) -> LowerResult<IRValue> {
+        let expected_ir = rx_to_ir_type(self.type_ctx, expected_rx);
+        if matches!(expected_rx, RxType::Ref(_, _)) {
+            if let Ok(ptr) = self.lower_lvalue_pointer(object) {
+                return Ok(self.ensure_pointer_type(ptr, expected_ir));
+            }
+            let value = self.lower_expression(object)?;
+            if value.get_type() == expected_ir {
+                return Ok(value);
+            }
+            let inner_ty = match &expected_ir {
+                IRType::Ptr(inner) => inner.as_ref().clone(),
+                _ => value.get_type().clone(),
+            };
+            let alloca = self.emit_value_instr(
+                IRInstructionKind::Alloca {
+                    alloc_type: inner_ty.clone(),
+                    align: None,
+                },
+                IRType::Ptr(Box::new(inner_ty.clone())),
+            );
+            self.emit_store(value, alloca.clone())?;
+            Ok(self.ensure_pointer_type(alloca, expected_ir))
+        } else {
+            let value = self.lower_expression(object)?;
+            if value.get_type() == expected_ir {
+                Ok(value)
+            } else if matches!(value.get_type(), IRType::Ptr(_))
+                && matches!(expected_ir, IRType::Ptr(_))
+            {
+                Ok(self.ensure_pointer_type(value, expected_ir))
+            } else {
+                Err(LowerError::TypeMismatch {
+                    expected: expected_ir,
+                    found: value.get_type(),
+                })
+            }
+        }
+    }
+
+    fn adjust_binary_op(&self, op: IRBinaryOp, node_id: NodeId) -> IRBinaryOp {
+        let Some(rx_type) = self.type_ctx.get_type(node_id) else {
+            return op;
+        };
+        if !is_unsigned_integer_type(&rx_type) {
+            return op;
+        }
+        match op {
+            IRBinaryOp::SDiv => IRBinaryOp::UDiv,
+            IRBinaryOp::SRem => IRBinaryOp::URem,
+            IRBinaryOp::AShr => IRBinaryOp::LShr,
+            other => other,
+        }
+    }
+
+    fn adjust_compare_op(&self, op: IRICmpOp, token: &TokenType, lhs: &ExpressionNode) -> IRICmpOp {
+        let Some(lhs_id) = expression_node_id(lhs) else {
+            return op;
+        };
+        let Some(rx_type) = self.type_ctx.get_type(lhs_id) else {
+            return op;
+        };
+        if !is_unsigned_integer_type(&rx_type) {
+            return op;
+        }
+        match token {
+            TokenType::Gt => IRICmpOp::Ugt,
+            TokenType::GEq => IRICmpOp::Uge,
+            TokenType::Lt => IRICmpOp::Ult,
+            TokenType::LEq => IRICmpOp::Ule,
+            _ => op,
+        }
+    }
+
+    fn ensure_pointer_type(&mut self, ptr: IRValue, expected_ty: IRType) -> IRValue {
+        if ptr.get_type() == expected_ty {
+            ptr
+        } else if matches!(ptr.get_type(), IRType::Ptr(_)) && matches!(expected_ty, IRType::Ptr(_))
+        {
+            self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::BitCast,
+                    value: ptr,
+                    to_type: expected_ty.clone(),
+                },
+                expected_ty,
+            )
+        } else {
+            ptr
         }
     }
 
@@ -892,6 +2522,10 @@ impl<'a> FunctionBuilder<'a> {
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    fn set_terminator(&mut self, kind: IRInstructionKind) {
+        self.current_block.terminator = Some(IRInstruction::new(kind));
     }
 
     fn has_terminated(&self) -> bool {
@@ -917,6 +2551,15 @@ impl<'a> FunctionBuilder<'a> {
             Ok(Some(ir_type))
         }
     }
+
+    fn lookup_binding(&self, name: &str) -> Option<Binding> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.get(name) {
+                return Some(binding.clone());
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -930,7 +2573,7 @@ pub struct LoopFrame {
     break_label: String,
     continue_label: String,
     result_ty: Option<IRType>,
-    break_value: Vec<(IRValue, String)>,
+    break_values: Vec<(IRValue, String)>,
 }
 
 impl LoopFrame {
@@ -939,7 +2582,7 @@ impl LoopFrame {
             break_label,
             continue_label,
             result_ty,
-            break_value: Vec::new(),
+            break_values: Vec::new(),
         }
     }
 }

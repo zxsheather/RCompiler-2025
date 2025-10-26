@@ -1,4 +1,4 @@
-use crate::frontend::r_semantic::tyctxt::NodeId;
+use crate::{frontend::r_semantic::tyctxt::NodeId, middleend::ir::module::IRType};
 use thiserror::Error;
 
 pub type LowerResult<T> = Result<T, LowerError>;
@@ -21,4 +21,8 @@ pub enum LowerError {
     MissingReturnValue(String),
     #[error("failed to parse integer literal '{0}'")]
     IntegerLiteral(String),
+    #[error("unsupported cast : '{0}'")]
+    UnsupportedCast(String),
+    #[error("type mismatch: expected '{expected:?}', found '{found:?}'")]
+    TypeMismatch { expected: IRType, found: IRType },
 }
