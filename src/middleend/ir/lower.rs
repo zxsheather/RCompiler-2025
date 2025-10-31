@@ -43,7 +43,7 @@ use crate::{
     },
 };
 
-pub const ENTRY_BLOCK_LABEL: &str = "entry";
+pub const ENTRY_BLOCK_LABEL: &str = "fn_entry";
 
 pub struct Lower<'a> {
     nodes: &'a [AstNode],
@@ -180,6 +180,8 @@ impl<'a> Lower<'a> {
                 _ => {}
             }
         }
+
+        self.append_builtin_declarations(&mut funcs, &defined_symbols);
         Ok(IRModule {
             name: module_name.to_string(),
             funcs,
@@ -193,6 +195,14 @@ impl<'a> Lower<'a> {
     ) {
         let builtin_lowering = build_builtin_lowering(self.type_ctx, defined_symbols);
         let mut synthesized = HashSet::new();
+
+        for extern_func in builtin_lowering.externs {
+            synthesized.insert(extern_func.name.clone());
+            if funcs.iter().any(|f| f.name == extern_func.name) {
+                continue;
+            }
+            funcs.push(extern_func);
+        }
 
         for builtin in builtin_lowering.functions {
             synthesized.insert(builtin.name.clone());
@@ -595,6 +605,28 @@ impl<'a> FunctionBuilder<'a> {
                 self.bind_value(name.clone(), Binding::Value(arg));
             }
         }
+
+        let result = self.lower_block(&self.func.body)?;
+
+        if !self.has_terminated() {
+            match (&self.return_type, result) {
+                (IRType::Void, _) => self.emit_return(None),
+                (_, Some(value)) => {
+                    let coerced = self.coerce_to_return_type(value)?;
+                    self.emit_return(Some(coerced));
+                }
+                (IRType::I32, None) if self.func.name.lexeme == "main" => {
+                    let zero = const_i32(0);
+                    self.emit_return(Some(zero));
+                }
+                (_, None) => {
+                    return Err(LowerError::MissingReturnValue(
+                        self.func.name.lexeme.clone(),
+                    ));
+                }
+            }
+        }
+        self.pop_scope();
         Ok(())
     }
 
@@ -910,8 +942,8 @@ impl<'a> FunctionBuilder<'a> {
                     &node.right_operand,
                 );
             }
-            TokenType::And | TokenType::Or => {
-                let is_or = matches!(node.operator.token_type, TokenType::Or);
+            TokenType::AndAnd | TokenType::OrOr => {
+                let is_or = matches!(node.operator.token_type, TokenType::OrOr);
                 return self.lower_short_circuit(
                     node.node_id,
                     &node.left_operand,
@@ -1523,6 +1555,8 @@ impl<'a> FunctionBuilder<'a> {
         });
         self.start_new_block(then_label.clone());
         let then_value = self.lower_block(&node.then_block)?;
+        // Record the exit label for the then block
+        let then_exit_label = self.current_block.label.clone();
         if !self.has_terminated() {
             self.emit_void_instr(IRInstructionKind::Br {
                 dest: merge_label.clone(),
@@ -1531,7 +1565,7 @@ impl<'a> FunctionBuilder<'a> {
         let mut incoming = Vec::new();
         if let Some(then_val) = then_value {
             if then_val.get_type() != IRType::Void {
-                incoming.push((then_val, then_label.clone()));
+                incoming.push((then_val, then_exit_label));
             }
         }
         if let Some(else_block) = &node.else_block {
@@ -1810,6 +1844,7 @@ impl<'a> FunctionBuilder<'a> {
                 found: right_val.get_type(),
             });
         }
+        let rhs_exit_label = self.current_block.label.clone();
         if !self.has_terminated() {
             self.emit_void_instr(IRInstructionKind::Br {
                 dest: merge_label.clone(),
@@ -1833,7 +1868,7 @@ impl<'a> FunctionBuilder<'a> {
         } else {
             (left_val.clone(), current_block_label.clone())
         };
-        let incoming_right = (right_val.clone(), rhs_label.clone());
+        let incoming_right = (right_val.clone(), rhs_exit_label);
         let phi = self.emit_value_instr(
             IRInstructionKind::Phi {
                 ty: res_ty.clone(),
@@ -2353,6 +2388,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             ExpressionNode::Member(member) => self.lower_struct_field_ptr(member),
             ExpressionNode::Index(index) => self.lower_array_index_ptr(index),
+            ExpressionNode::Deref(node) => self.lower_expression(&node.operand),
             _ => Err(LowerError::UnsupportedExpression(
                 "expression is not an lvalue".to_string(),
             )),

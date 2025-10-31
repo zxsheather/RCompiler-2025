@@ -1964,6 +1964,8 @@ impl Analyzer {
                 }
                 self.type_context
                     .set_type(*node_id, sig.return_type.clone());
+                self.type_context
+                    .set_type(c.node_id, sig.return_type.clone());
                 Ok(sig.return_type)
             }
             _ => Err(SemanticError::Generic {

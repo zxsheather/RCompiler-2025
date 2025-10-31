@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IRModule {
     pub name: String,
@@ -148,6 +150,27 @@ pub enum IRBinaryOp {
     AShr,
 }
 
+impl fmt::Display for IRBinaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            IRBinaryOp::Add => "add",
+            IRBinaryOp::Sub => "sub",
+            IRBinaryOp::Mul => "mul",
+            IRBinaryOp::UDiv => "udiv",
+            IRBinaryOp::SDiv => "sdiv",
+            IRBinaryOp::URem => "urem",
+            IRBinaryOp::SRem => "srem",
+            IRBinaryOp::And => "and",
+            IRBinaryOp::Or => "or",
+            IRBinaryOp::Xor => "xor",
+            IRBinaryOp::Shl => "shl",
+            IRBinaryOp::LShr => "lshr",
+            IRBinaryOp::AShr => "ashr",
+        };
+        write!(f, "{}", op_str)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IRCastOp {
     Trunc,
@@ -156,6 +179,20 @@ pub enum IRCastOp {
     PtrToInt,
     IntToPtr,
     BitCast,
+}
+
+impl fmt::Display for IRCastOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            IRCastOp::Trunc => "trunc",
+            IRCastOp::ZExt => "zext",
+            IRCastOp::SExt => "sext",
+            IRCastOp::PtrToInt => "ptrtoint",
+            IRCastOp::IntToPtr => "inttoptr",
+            IRCastOp::BitCast => "bitcast",
+        };
+        write!(f, "{}", op_str)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +207,24 @@ pub enum IRICmpOp {
     Uge,
     Ult,
     Ule,
+}
+
+impl fmt::Display for IRICmpOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            IRICmpOp::Eq => "eq",
+            IRICmpOp::Ne => "ne",
+            IRICmpOp::Sgt => "sgt",
+            IRICmpOp::Sge => "sge",
+            IRICmpOp::Slt => "slt",
+            IRICmpOp::Sle => "sle",
+            IRICmpOp::Ugt => "ugt",
+            IRICmpOp::Uge => "uge",
+            IRICmpOp::Ult => "ult",
+            IRICmpOp::Ule => "ule",
+        };
+        write!(f, "{}", op_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
