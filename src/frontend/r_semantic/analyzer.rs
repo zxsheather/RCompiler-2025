@@ -77,6 +77,18 @@ impl FuncSig {
             self_kind,
         }
     }
+
+    pub fn param_types(&self) -> &[RxType] {
+        &self.param_types
+    }
+
+    pub fn return_type(&self) -> &RxType {
+        &self.return_type
+    }
+
+    pub fn self_kind(&self) -> &SelfKind {
+        &self.self_kind
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -242,6 +254,11 @@ impl Analyzer {
     fn add_built_ins(&mut self) -> SemanticResult<()> {
         // built-in functions
         for (name, sig) in get_built_in_funcs() {
+            self.type_context.set_func_sig(
+                name,
+                sig.param_types().to_vec(),
+                sig.return_type().clone(),
+            );
             self.globe.declare_fn(
                 name.to_string(),
                 sig.param_types,
@@ -251,17 +268,41 @@ impl Analyzer {
         }
 
         // built in structs
-        self.globe.structs.insert("String".into(), HashMap::new());
-        self.globe.structs.insert("U32".into(), HashMap::new());
-        self.globe.structs.insert("USize".into(), HashMap::new());
-        self.globe.structs.insert("Str".into(), HashMap::new());
-        self.globe.structs.insert("Array".into(), HashMap::new());
+
+        // pub struct String {
+        //     pub data: Str,
+        //     pub capacity: USize,
+        // }
+        let mut string_fields = HashMap::new();
+        string_fields.insert("data".into(), RxType::Str);
+        string_fields.insert("capacity".into(), RxType::USize);
+        self.globe
+            .structs
+            .insert("String".into(), string_fields.clone());
+        self.type_context.set_struct_layout(
+            "String",
+            vec![
+                ("data".into(), RxType::Str),
+                ("capacity".into(), RxType::USize),
+            ],
+        );
+        for name in ["U32", "USize", "Str", "Array"] {
+            self.globe.structs.insert(name.into(), HashMap::new());
+            self.type_context.set_struct_layout(name, vec![]);
+        }
 
         // built-in methods
         for (ty, name, sig) in get_built_in_methods() {
             self.globe
                 .methods
                 .insert((ty.into(), name.into()), sig.clone());
+            self.type_context.set_method_sig(
+                ty,
+                name,
+                sig.param_types().to_vec(),
+                sig.return_type().clone(),
+                sig.self_kind().clone(),
+            );
         }
 
         // built-in static methods
@@ -269,6 +310,12 @@ impl Analyzer {
             self.globe
                 .static_methods
                 .insert((ty.into(), name.into()), sig.clone());
+            self.type_context.set_static_method_sig(
+                ty,
+                name,
+                sig.param_types().to_vec(),
+                sig.return_type().clone(),
+            );
         }
 
         Ok(())
@@ -293,6 +340,12 @@ impl Analyzer {
             match node {
                 AstNode::Function(func) => {
                     let sig = self.extract_sig(func)?;
+                    let func_name = sig.token.lexeme.clone();
+                    self.type_context.set_func_sig(
+                        func_name,
+                        sig.param_types.to_vec(),
+                        sig.return_type.clone(),
+                    );
                     self.globe.declare_fn(
                         sig.token.lexeme.clone(),
                         sig.param_types,
@@ -468,14 +521,18 @@ impl Analyzer {
 
     fn analyse_struct_decl(&mut self, sd: &StructDeclNode) -> SemanticResult<()> {
         let mut field_map = HashMap::new();
+        let mut layout_fields = Vec::new();
         for field in &sd.fields {
             let ty = self.type_from_node(&field.type_annotation)?;
-            field_map.insert(field.name.lexeme.clone(), ty);
+            field_map.insert(field.name.lexeme.clone(), ty.clone());
+            layout_fields.push((field.name.lexeme.clone(), ty));
         }
         self.globe.structs.insert(sd.name.lexeme.clone(), field_map);
         self.globe
             .impl_traits
             .insert(sd.name.lexeme.clone(), Vec::new());
+        self.type_context
+            .set_struct_layout(sd.name.lexeme.clone(), layout_fields);
         Ok(())
     }
 
@@ -549,6 +606,14 @@ impl Analyzer {
                 };
                 let mut rest_params = param_types.clone();
                 rest_params.remove(0);
+                let method_name = m.name.lexeme.clone();
+                self.type_context.set_method_sig(
+                    st_name.clone(),
+                    method_name,
+                    rest_params.clone(),
+                    return_type.clone(),
+                    self_kind.clone(),
+                );
                 self.globe.methods.insert(
                     (st_name.clone(), m.name.lexeme.clone()),
                     FuncSig {
@@ -559,8 +624,15 @@ impl Analyzer {
                     },
                 );
             } else {
+                let method_name = m.name.lexeme.clone();
+                self.type_context.set_static_method_sig(
+                    st_name.clone(),
+                    method_name.clone(),
+                    param_types.clone(),
+                    return_type.clone(),
+                );
                 self.globe.static_methods.insert(
-                    (st_name.clone(), m.name.lexeme.clone()),
+                    (st_name.clone(), method_name),
                     FuncSig {
                         param_types,
                         return_type,
@@ -709,6 +781,13 @@ impl Analyzer {
         // Register concrete impl trait methods as regular methods so that
         // method dispatch (and self kind checking) uses concrete self_kind.
         for (name, sig) in methods.into_iter() {
+            self.type_context.set_method_sig(
+                it.type_name.lexeme.clone(),
+                name.clone(),
+                sig.param_types.to_vec(),
+                sig.return_type.clone(),
+                sig.self_kind.clone(),
+            );
             self.globe
                 .methods
                 .insert((it.type_name.lexeme.clone(), name), sig);
@@ -847,6 +926,7 @@ impl Analyzer {
             ret = self.analyse_expression(expr)?;
         }
         self.globe.pop_scope();
+        self.type_context.set_type(blk.node_id, ret.clone());
         Ok(ret)
     }
 
@@ -948,6 +1028,11 @@ impl Analyzer {
                         column: const_token.position.column,
                     });
                 }
+                self.type_context.set_const_item(
+                    name.lexeme.clone(),
+                    decl_ty.clone(),
+                    const_val.clone(),
+                );
                 self.globe.declare_const(name, &decl_ty, &const_val)?;
                 Ok(None)
             }
@@ -1297,19 +1382,42 @@ impl Analyzer {
                 column,
             });
         };
-        Ok(ty.clone())
+        let ty = ty.clone();
+        self.type_context.set_type(m.node_id, ty.clone());
+        Ok(ty)
     }
 
     fn analyse_static_member(&mut self, sm: &StaticMemberExprNode) -> SemanticResult<RxType> {
-        if self.globe.structs.contains_key(&sm.type_name.lexeme) {
+        let resolved_type = if matches!(sm.type_name.token_type, TokenType::SelfUpper) {
+            if let Some(st_name) = &self.current_struct {
+                st_name.clone()
+            } else {
+                return Err(SemanticError::Generic {
+                    msg: "Cannot use Self outside of struct/impl".to_string(),
+                    line: sm.type_name.position.line,
+                    column: sm.type_name.position.column,
+                });
+            }
+        } else {
+            sm.type_name.lexeme.clone()
+        };
+        self.type_context.set_static_method_ref(
+            sm.node_id,
+            resolved_type.clone(),
+            sm.member.lexeme.clone(),
+        );
+        if self.globe.structs.contains_key(&resolved_type) {
+            self.type_context.set_type(sm.node_id, RxType::Unit);
             return Ok(RxType::Unit);
         }
-        if let Some(enum_map) = self.globe.enums.get(&sm.type_name.lexeme) {
+        if let Some(enum_map) = self.globe.enums.get(&resolved_type) {
             if let Some(_) = enum_map.get(&sm.member.lexeme) {
+                self.type_context
+                    .set_type(sm.node_id, RxType::Struct(sm.type_name.lexeme.clone()));
                 return Ok(RxType::Struct(sm.type_name.lexeme.clone()));
             } else {
                 return Err(SemanticError::UnknownEnumVariant {
-                    enum_name: sm.type_name.lexeme.clone(),
+                    enum_name: resolved_type.clone(),
                     variant: sm.member.lexeme.clone(),
                     line: sm.member.position.line,
                     column: sm.member.position.column,
@@ -1317,7 +1425,7 @@ impl Analyzer {
             }
         }
         return Err(SemanticError::UnknownStruct {
-            name: sm.type_name.lexeme.clone(),
+            name: resolved_type,
             line: sm.type_name.position.line,
             column: sm.type_name.position.column,
         });
@@ -1325,14 +1433,16 @@ impl Analyzer {
 
     fn analyse_deref(&mut self, d: &DerefExprNode) -> SemanticResult<RxType> {
         let ty = self.analyse_expression(&d.operand)?;
-        match ty {
+        let tp = match ty {
             RxType::Ref(inner, _) => Ok(*inner),
             _ => Err(SemanticError::Generic {
                 msg: "Cannot dereference non-reference type".to_string(),
                 line: d.star_token.position.line,
                 column: d.star_token.position.column,
             }),
-        }
+        }?;
+        self.type_context.set_type(d.node_id, tp.clone());
+        Ok(tp)
     }
 
     fn analyse_ref(&mut self, r: &RefExprNode) -> SemanticResult<RxType> {
@@ -1481,11 +1591,14 @@ impl Analyzer {
                         }
                     };
                 }
+                let length = elements.len();
                 self.type_context.set_type(
                     *node_id,
-                    RxType::Array(Box::new(elem_ty.clone()), Some(elements.len())),
+                    RxType::Array(Box::new(elem_ty.clone()), Some(length)),
                 );
-                Ok(RxType::Array(Box::new(elem_ty), Some(elements.len())))
+                self.type_context
+                    .set_array_layout(node_id.clone(), elem_ty.clone(), Some(length));
+                Ok(RxType::Array(Box::new(elem_ty), Some(length)))
             }
 
             ArrayLiteralNode::Repeated {
@@ -1505,6 +1618,8 @@ impl Analyzer {
                     *node_id,
                     RxType::Array(Box::new(elem_ty.clone()), Some(size)),
                 );
+                self.type_context
+                    .set_array_layout(node_id.clone(), elem_ty.clone(), Some(size));
                 Ok(RxType::Array(Box::new(elem_ty), Some(size)))
             }
         }
@@ -1582,6 +1697,8 @@ impl Analyzer {
                 });
             }
         }
+        self.type_context
+            .set_type(s.node_id, RxType::Struct(name.clone()));
         Ok(RxType::Struct(s.name.lexeme.clone()))
     }
 
@@ -1624,6 +1741,7 @@ impl Analyzer {
             None => RxType::Unit,
         };
         if let Some(ty) = RxType::unify(&then_ty, &else_ty) {
+            self.type_context.set_type(i.node_id, ty.clone());
             Ok(ty)
         } else {
             Err(SemanticError::BranchTypeMismatched {
@@ -1736,6 +1854,7 @@ impl Analyzer {
     fn analyse_call(&mut self, c: &CallExprNode) -> SemanticResult<RxType> {
         match &*c.function {
             ExpressionNode::StaticMember(sm) => {
+                self.analyse_static_member(sm)?;
                 let st = if matches!(sm.type_name.token_type, TokenType::SelfUpper) {
                     if let Some(current_struct) = &self.current_struct {
                         current_struct.clone()
@@ -1853,6 +1972,8 @@ impl Analyzer {
                 }
                 self.type_context
                     .set_type(*node_id, sig.return_type.clone());
+                self.type_context
+                    .set_type(c.node_id, sig.return_type.clone());
                 Ok(sig.return_type)
             }
             _ => Err(SemanticError::Generic {
@@ -1906,16 +2027,6 @@ impl Analyzer {
                 column: mc.method.position.column,
             });
         }
-        let sig = self
-            .globe
-            .methods
-            .get(&(key.clone(), method_name.clone()))
-            .cloned()
-            .ok_or_else(|| SemanticError::UnknownCallee {
-                name: format!("{}::{}", key, method_name),
-                line: mc.method.position.line,
-                column: mc.method.position.column,
-            })?;
         let sig = if let Some(sig) = self
             .globe
             .methods

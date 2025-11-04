@@ -13,6 +13,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     type_context: TypeContext,
     index: usize,
+    current_struct: Option<Token>,
 }
 
 impl Parser {
@@ -21,6 +22,7 @@ impl Parser {
             tokens,
             type_context: TypeContext::new(),
             index: 0,
+            current_struct: None,
         }
     }
 
@@ -276,6 +278,12 @@ impl Parser {
             TokenType::Identifier => {
                 self.advance();
                 Ok(TypeNode::Named(token))
+            }
+            TokenType::SelfUpper => {
+                self.advance();
+                Ok(TypeNode::Named(
+                    self.current_struct.clone().unwrap_or(token),
+                ))
             }
             TokenType::LBracket => {
                 // [T; N] or [T]
@@ -898,6 +906,7 @@ impl Parser {
     fn parse_impl_block(&mut self) -> ParseResult<ImplNode> {
         let impl_token = self.expect_type(&TokenType::Impl)?;
         let name = self.expect_type(&TokenType::Identifier)?;
+        self.current_struct = Some(name.clone());
         self.expect_type(&TokenType::LBrace)?;
         let mut methods = Vec::new();
         while !self.check_type(&TokenType::RBrace) {
@@ -931,6 +940,7 @@ impl Parser {
             methods.push(method);
         }
         self.expect_type(&TokenType::RBrace)?;
+        self.current_struct = None;
         Ok(ImplNode {
             impl_token,
             name,

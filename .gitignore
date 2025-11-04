@@ -2,5 +2,8 @@
 /.idea
 /.vscode
 /.DS_Store
-/testcases
 /ast_out
+/reference
+/playground
+/failed_test_ir
+/failed_single_test_ir
