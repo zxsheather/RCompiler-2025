@@ -590,6 +590,7 @@ fn run_playground() -> i32 {
     let source_path = playground_dir.join("main.rx");
     let input_path = playground_dir.join("in");
     let output_path = playground_dir.join("out");
+    let ir_output_path = playground_dir.join("play.ll");
 
     // Read source code
     let src = match fs::read_to_string(&source_path) {
@@ -612,6 +613,13 @@ fn run_playground() -> i32 {
     };
 
     println!("Compilation successful!");
+
+    if let Err(e) = fs::write(&ir_output_path, &ir_text) {
+        eprintln!("Failed to write IR to {}: {}", ir_output_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!("IR written to {}", ir_output_path.display());
 
     // Read input file (if exists)
     let stdin_data = match fs::read(&input_path) {

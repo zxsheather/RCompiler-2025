@@ -505,7 +505,6 @@ impl LLVMEmitter {
             IRType::Array { elem_type, size } => {
                 format!("[{} x {}]", size, self.format_type(elem_type))
             }
-            IRType::Never => "undef".to_string(),
         }
     }
 

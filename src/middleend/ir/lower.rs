@@ -1236,9 +1236,10 @@ impl<'a> FunctionBuilder<'a> {
                 )));
             }
         };
-        let mut aggregate = IRValue::Undef(result_ty.clone());
+
         match literal {
             ArrayLiteralNode::Elements { elements, .. } => {
+                let mut aggregate = IRValue::Undef(result_ty.clone());
                 for (index, expr) in elements.iter().enumerate() {
                     let value = self.lower_expression(expr)?;
                     if value.get_type() != elem_ty {
@@ -1256,11 +1257,89 @@ impl<'a> FunctionBuilder<'a> {
                         result_ty.clone(),
                     );
                 }
+                Ok(aggregate)
             }
             ArrayLiteralNode::Repeated { element, .. } => {
+                // Check if we can use memset optimization
+                // memset can only be used when:
+                // 1. Element type is i8 or i32
+                // 2. The value is a constant 0
+                // 3. The array size is reasonably large (> 16 elements)
+                let use_memset = size > 16 && matches!(elem_ty, IRType::I8 | IRType::I32);
+
+                if use_memset {
+                    if let ExpressionNode::IntegerLiteral(token, _) = element.as_ref() {
+                        if token.lexeme == "0" {
+                            // Use memset optimization
+                            // Allocate the array on stack
+                            let alloc = self.emit_value_instr(
+                                IRInstructionKind::Alloca {
+                                    alloc_type: result_ty.clone(),
+                                    align: None,
+                                },
+                                IRType::Ptr(Box::new(result_ty.clone())),
+                            );
+
+                            // In newer LLVM versions, ptr types only need to emit ptr,
+                            // so we can directly use the alloc pointer as i8*. If we need
+                            // to cast, uncomment the following code.
+
+                            // let i8_ptr = self.emit_value_instr(
+                            //     IRInstructionKind::Cast {
+                            //         op: IRCastOp::BitCast,
+                            //         value: alloc.clone(),
+                            //         to_type: IRType::Ptr(Box::new(IRType::I8)),
+                            //     },
+                            //     IRType::Ptr(Box::new(IRType::I8)),
+                            // );
+
+                            // Calculate total bytes
+                            let elem_size = match elem_ty {
+                                IRType::I8 => 1,
+                                IRType::I32 => 4,
+                                _ => unreachable!(),
+                            };
+                            let total_bytes = size * elem_size;
+
+                            // Call llvm.memset.p0.i32(ptr, 0, size, false)
+                            self.emit_void_instr(IRInstructionKind::Call {
+                                callee: CallTarget::Direct("llvm.memset.p0.i32".to_string()),
+                                args: vec![
+                                    alloc.clone(),
+                                    IRValue::ConstInt {
+                                        value: 0,
+                                        ty: IRType::I8,
+                                    },
+                                    IRValue::ConstInt {
+                                        value: total_bytes as i64,
+                                        ty: IRType::I32,
+                                    },
+                                    IRValue::ConstInt {
+                                        value: 0,
+                                        ty: IRType::I1,
+                                    }, // is_volatile = false
+                                ],
+                            });
+
+                            // Load the initialized array
+                            let result = self.emit_value_instr(
+                                IRInstructionKind::Load {
+                                    ptr: alloc,
+                                    align: None,
+                                },
+                                result_ty.clone(),
+                            );
+
+                            return Ok(result);
+                        }
+                    }
+                }
+
+                // Fall back to insertvalue for non-zero values or small arrays
+                let mut aggregate = IRValue::Undef(result_ty.clone());
                 let mut cached_value: Option<IRValue> = None;
                 for index in 0..size {
-                    let mut value = if let Some(cached) = &cached_value {
+                    let value = if let Some(cached) = &cached_value {
                         cached.clone()
                     } else {
                         let val = self.lower_expression(element)?;
@@ -1282,9 +1361,9 @@ impl<'a> FunctionBuilder<'a> {
                         result_ty.clone(),
                     );
                 }
+                Ok(aggregate)
             }
         }
-        Ok(aggregate)
     }
 
     pub fn lower_deref_expr(&mut self, node: &DerefExprNode) -> LowerResult<IRValue> {
