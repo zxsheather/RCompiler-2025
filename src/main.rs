@@ -3,7 +3,7 @@ mod middleend;
 
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -709,6 +709,16 @@ fn run_ir_tests(root: Option<String>) -> i32 {
             .unwrap_or("<unnamed>")
             .to_string();
 
+        // Print progress with immediate flush
+        eprint!(
+            "Testing {}/{}: {}... ",
+            passed + failed_cases.len() + 1,
+            total,
+            name
+        );
+        let _ = std::io::stderr().flush();
+        let test_start = Instant::now();
+
         let expected_compile_exit = entry
             .get("compileexitcode")
             .and_then(|v| v.as_i64())
@@ -761,6 +771,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
         };
 
         // Compile to IR
+        eprint!("compiling...");
+        let _ = std::io::stderr().flush();
         let ir_text = match compile_source_to_ir(&src, &source_path) {
             Ok(ir) => ir,
             Err(e) => {
@@ -769,10 +781,12 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                         name.clone(),
                         format!("compilation failed (expected success): {e}"),
                     ));
+                    eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
                 } else {
                     // Expected compilation failure
                     passed += 1;
                     passed_cases.push(name);
+                    eprintln!("OK ({:.2}s)", test_start.elapsed().as_secs_f64());
                 }
                 continue;
             }
@@ -784,6 +798,7 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                 name.clone(),
                 format!("compilation succeeded but expected exit code {expected_compile_exit}"),
             ));
+            eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
             continue;
         }
 
@@ -825,6 +840,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
         };
 
         // Run the compiled IR
+        eprint!("running...");
+        let _ = std::io::stderr().flush();
         let timeout = Duration::from_secs(10);
         let result = match compile_and_run_ir(&ir_text, &stdin_data, timeout) {
             Ok(res) => res,
@@ -932,15 +949,17 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                 }
             };
             failed_cases.push((name.clone(), diff));
+            eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
             continue;
         }
 
         // Test passed
         passed += 1;
         passed_cases.push(name);
+        eprintln!("OK ({:.2}s)", test_start.elapsed().as_secs_f64());
     }
 
-    println!("IR tests: {passed}/{total} passed");
+    println!("\nIR tests: {passed}/{total} passed");
 
     if !passed_cases.is_empty() {
         println!("Passed cases:");
