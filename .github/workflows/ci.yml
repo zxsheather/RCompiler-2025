@@ -21,6 +21,17 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install LLVM and Clang
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y llvm clang
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install llvm
+            echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+          fi
+        shell: bash
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -33,6 +44,8 @@ jobs:
         run: |
           rustc -Vv
           cargo -V
+          clang --version || echo "clang not found"
+          llvm-as --version || echo "llvm-as not found"
 
       - name: Format check
         run: bash .ci/fmt.sh
