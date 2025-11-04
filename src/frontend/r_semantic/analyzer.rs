@@ -926,6 +926,7 @@ impl Analyzer {
             ret = self.analyse_expression(expr)?;
         }
         self.globe.pop_scope();
+        self.type_context.set_type(blk.node_id, ret.clone());
         Ok(ret)
     }
 
@@ -1406,10 +1407,13 @@ impl Analyzer {
             sm.member.lexeme.clone(),
         );
         if self.globe.structs.contains_key(&resolved_type) {
+            self.type_context.set_type(sm.node_id, RxType::Unit);
             return Ok(RxType::Unit);
         }
         if let Some(enum_map) = self.globe.enums.get(&resolved_type) {
             if let Some(_) = enum_map.get(&sm.member.lexeme) {
+                self.type_context
+                    .set_type(sm.node_id, RxType::Struct(sm.type_name.lexeme.clone()));
                 return Ok(RxType::Struct(sm.type_name.lexeme.clone()));
             } else {
                 return Err(SemanticError::UnknownEnumVariant {
@@ -1429,14 +1433,16 @@ impl Analyzer {
 
     fn analyse_deref(&mut self, d: &DerefExprNode) -> SemanticResult<RxType> {
         let ty = self.analyse_expression(&d.operand)?;
-        match ty {
+        let tp = match ty {
             RxType::Ref(inner, _) => Ok(*inner),
             _ => Err(SemanticError::Generic {
                 msg: "Cannot dereference non-reference type".to_string(),
                 line: d.star_token.position.line,
                 column: d.star_token.position.column,
             }),
-        }
+        }?;
+        self.type_context.set_type(d.node_id, tp.clone());
+        Ok(tp)
     }
 
     fn analyse_ref(&mut self, r: &RefExprNode) -> SemanticResult<RxType> {
@@ -1691,6 +1697,8 @@ impl Analyzer {
                 });
             }
         }
+        self.type_context
+            .set_type(s.node_id, RxType::Struct(name.clone()));
         Ok(RxType::Struct(s.name.lexeme.clone()))
     }
 

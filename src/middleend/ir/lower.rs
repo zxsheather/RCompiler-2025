@@ -742,7 +742,6 @@ impl<'a> FunctionBuilder<'a> {
         let expr_type = if let Some(expr) = &node.value {
             match self.expression_value_type(expr) {
                 Ok(opt) => opt,
-                Err(LowerError::MissingType(_)) => None,
                 Err(e) => return Err(e),
             }
         } else {
@@ -849,7 +848,13 @@ impl<'a> FunctionBuilder<'a> {
     ) -> LowerResult<IRValue> {
         let ty = match self.node_value_type(node_id) {
             Ok(Some(ty)) => ty,
-            Err(LowerError::MissingType(_)) | Ok(None) => IRType::I32,
+            // Err(LowerError::MissingType(_)) | Ok(None) => IRType::I32,
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "cannot infer type for integer literal: {}",
+                    token.lexeme
+                )));
+            }
             Err(e) => return Err(e),
         };
         let mut lexeme = token.lexeme.replace('_', "");
@@ -883,7 +888,12 @@ impl<'a> FunctionBuilder<'a> {
     ) -> LowerResult<IRValue> {
         let ty = match self.node_value_type(node_id) {
             Ok(Some(t)) => t,
-            Ok(None) | Err(LowerError::MissingType(_)) => IRType::I1,
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(format!(
+                    "cannot infer type for boolean literal: {}",
+                    token.lexeme
+                )));
+            }
             Err(e) => return Err(e),
         };
         let value = match token.token_type {
@@ -910,15 +920,9 @@ impl<'a> FunctionBuilder<'a> {
                 Binding::Pointer(ptr) => {
                     let result_ty = match self.node_value_type(node_id) {
                         Ok(Some(ty)) => ty,
-                        Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
-                            IRType::Ptr(inner) => inner.as_ref().clone(),
-                            other => {
-                                return Err(LowerError::UnsupportedExpression(format!(
-                                    "cannot load from non-pointer binding {:?}",
-                                    other
-                                )));
-                            }
-                        },
+                        Ok(None) => {
+                            return Err(LowerError::MissingType(node_id));
+                        }
                         Err(e) => return Err(e),
                     };
                     let load = self
@@ -970,7 +974,7 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(None) => IRType::I1,
                 Err(e) => return Err(e),
             };
-            let op = self.adjust_compare_op(op, &node.operator.token_type, &node.left_operand);
+            let op = self.adjust_compare_op(op, &node.operator.token_type, &node.left_operand)?;
             let cmp = self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, result_ty);
             return Ok(cmp);
         }
@@ -985,7 +989,9 @@ impl<'a> FunctionBuilder<'a> {
         let rhs = self.lower_expression(&node.right_operand)?;
         let result_ty = match self.node_value_type(node.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => lhs.get_type(),
+            Ok(None) => {
+                return Err(LowerError::MissingType(node.node_id));
+            }
             Err(e) => return Err(e),
         };
         let value = self.emit_value_instr(IRInstructionKind::Binary { op, lhs, rhs }, result_ty);
@@ -996,7 +1002,9 @@ impl<'a> FunctionBuilder<'a> {
         let operand = self.lower_expression(&node.operand)?;
         let result_ty = match self.node_value_type(node.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => operand.get_type(),
+            Ok(None) => {
+                return Err(LowerError::MissingType(node.node_id));
+            }
             Err(e) => return Err(e),
         };
         match node.operator.token_type {
@@ -1069,15 +1077,11 @@ impl<'a> FunctionBuilder<'a> {
         let field_ptr = self.lower_struct_field_ptr(member)?;
         let result_ty = match self.node_value_type(member.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => match field_ptr.get_type() {
-                IRType::Ptr(inner) => inner.as_ref().clone(),
-                other => {
-                    return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot load from non-pointer binding {:?}",
-                        other
-                    )));
-                }
-            },
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(
+                    "cannot determine type of member expression".to_string(),
+                ));
+            }
             Err(e) => return Err(e),
         };
         let value = self.emit_value_instr(
@@ -1094,15 +1098,20 @@ impl<'a> FunctionBuilder<'a> {
         let elem_ptr = self.lower_array_index_ptr(index)?;
         let result_ty = match self.node_value_type(index.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => match elem_ptr.get_type() {
-                IRType::Ptr(inner) => inner.as_ref().clone(),
-                other => {
-                    return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot load from non-pointer binding {:?}",
-                        other
-                    )));
-                }
-            },
+            // Ok(None) => match elem_ptr.get_type() {
+            //     IRType::Ptr(inner) => inner.as_ref().clone(),
+            //     other => {
+            //         return Err(LowerError::UnsupportedExpression(format!(
+            //             "cannot load from non-pointer binding {:?}",
+            //             other
+            //         )));
+            //     }
+            // },
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(
+                    "cannot determine type of indexed expression".to_string(),
+                ));
+            }
             Err(e) => return Err(e),
         };
         let value = self.emit_value_instr(
@@ -1147,15 +1156,10 @@ impl<'a> FunctionBuilder<'a> {
         self.emit_store(value.clone(), ptr.clone())?;
         if let Some(res_ty) = self.node_value_type(node_id)? {
             if res_ty != value.get_type() {
-                let casted = self.emit_value_instr(
-                    IRInstructionKind::Cast {
-                        op: IRCastOp::BitCast,
-                        value: value.clone(),
-                        to_type: res_ty.clone(),
-                    },
-                    res_ty,
-                );
-                return Ok(casted);
+                return Err(LowerError::TypeMismatch {
+                    expected: res_ty,
+                    found: value.get_type(),
+                });
             }
         }
         Ok(value)
@@ -1167,8 +1171,10 @@ impl<'a> FunctionBuilder<'a> {
     ) -> LowerResult<IRValue> {
         let res_ty = match self.node_value_type(literal.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => {
-                struct_ir_type(self.type_ctx, &literal.name.lexeme)?
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(
+                    "cannot determine struct literal type".to_string(),
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1196,14 +1202,13 @@ impl<'a> FunctionBuilder<'a> {
                     ))
                 })?;
 
-            let mut field_value = self.lower_expression(&field.value)?;
+            let field_value = self.lower_expression(&field.value)?;
             let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
             if field_value.get_type() != field_ty {
-                if matches!(field_value.get_type(), IRType::Ptr(_))
-                    && matches!(field_ty, IRType::Ptr(_))
-                {
-                    field_value = self.ensure_pointer_type(field_value, field_ty.clone());
-                }
+                return Err(LowerError::TypeMismatch {
+                    expected: field_ty,
+                    found: field_value.get_type(),
+                });
             }
             aggregate = self.emit_value_instr(
                 IRInstructionKind::InsertValue {
@@ -1224,13 +1229,10 @@ impl<'a> FunctionBuilder<'a> {
         };
         let result_ty = match self.node_value_type(node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => {
-                let rx_ty = self.type_ctx.get_type(node_id).ok_or_else(|| {
-                    LowerError::UnsupportedExpression(
-                        "cannot determine array literal type".to_string(),
-                    )
-                })?;
-                rx_to_ir_type(self.type_ctx, &rx_ty)
+            Ok(None) => {
+                return Err(LowerError::UnsupportedExpression(
+                    "cannot determine array literal type".to_string(),
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1247,13 +1249,12 @@ impl<'a> FunctionBuilder<'a> {
         match literal {
             ArrayLiteralNode::Elements { elements, .. } => {
                 for (index, expr) in elements.iter().enumerate() {
-                    let mut value = self.lower_expression(expr)?;
+                    let value = self.lower_expression(expr)?;
                     if value.get_type() != elem_ty {
-                        if matches!(value.get_type(), IRType::Ptr(_))
-                            && matches!(elem_ty, IRType::Ptr(_))
-                        {
-                            value = self.ensure_pointer_type(value, elem_ty.clone());
-                        }
+                        return Err(LowerError::TypeMismatch {
+                            expected: elem_ty.clone(),
+                            found: value.get_type(),
+                        });
                     }
                     aggregate = self.emit_value_instr(
                         IRInstructionKind::InsertValue {
@@ -1276,11 +1277,10 @@ impl<'a> FunctionBuilder<'a> {
                         val
                     };
                     if value.get_type() != elem_ty {
-                        if matches!(value.get_type(), IRType::Ptr(_))
-                            && matches!(elem_ty, IRType::Ptr(_))
-                        {
-                            value = self.ensure_pointer_type(value, elem_ty.clone());
-                        }
+                        return Err(LowerError::TypeMismatch {
+                            expected: elem_ty.clone(),
+                            found: value.get_type(),
+                        });
                     }
                     aggregate = self.emit_value_instr(
                         IRInstructionKind::InsertValue {
@@ -1300,15 +1300,9 @@ impl<'a> FunctionBuilder<'a> {
         let ptr = self.lower_expression(&node.operand)?;
         let result_ty = match self.node_value_type(node.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
-                IRType::Ptr(inner) => inner.as_ref().clone(),
-                other => {
-                    return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot load from non-pointer binding {:?}",
-                        other
-                    )));
-                }
-            },
+            Ok(None) => {
+                return Err(LowerError::MissingType(node.node_id));
+            }
             Err(e) => return Err(e),
         };
         let value = self.emit_value_instr(IRInstructionKind::Load { ptr, align: None }, result_ty);
@@ -1385,7 +1379,6 @@ impl<'a> FunctionBuilder<'a> {
         }
         let ret_ty = match self.node_value_type(call.node_id) {
             Ok(ty) => ty,
-            Err(LowerError::MissingType(_)) => None,
             Err(e) => return Err(e),
         };
         let call_ty = ret_ty.or(return_hint);
@@ -1453,14 +1446,13 @@ impl<'a> FunctionBuilder<'a> {
         let mut args = Vec::with_capacity(call.args.len() + 1);
         args.push(receiver);
         for (arg_expr, param_ty) in call.args.iter().zip(sig.params()) {
-            let mut arg_val = self.lower_expression(arg_expr)?;
+            let arg_val = self.lower_expression(arg_expr)?;
             let expected_ir = rx_to_ir_type(self.type_ctx, param_ty);
             if arg_val.get_type() != expected_ir {
-                if matches!(arg_val.get_type(), IRType::Ptr(_))
-                    && matches!(expected_ir, IRType::Ptr(_))
-                {
-                    arg_val = self.ensure_pointer_type(arg_val, expected_ir.clone());
-                }
+                return Err(LowerError::TypeMismatch {
+                    expected: expected_ir,
+                    found: arg_val.get_type(),
+                });
             }
             args.push(arg_val);
         }
@@ -1491,15 +1483,9 @@ impl<'a> FunctionBuilder<'a> {
         let ptr = self.lower_lvalue_pointer(left_operand)?;
         let value_ty = match self.expression_value_type(left_operand) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => match ptr.get_type() {
-                IRType::Ptr(inner) => inner.as_ref().clone(),
-                other => {
-                    return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot load from non-pointer binding {:?}",
-                        other
-                    )));
-                }
-            },
+            Ok(None) => {
+                return Err(LowerError::MissingType(node_id));
+            }
             Err(e) => return Err(e),
         };
         let current = self.emit_value_instr(
@@ -1704,9 +1690,10 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(ty) = &expected_ty {
             if let Some(ref mut val) = break_value {
                 if val.get_type() != *ty {
-                    if matches!(val.get_type(), IRType::Ptr(_)) && matches!(ty, IRType::Ptr(_)) {
-                        *val = self.ensure_pointer_type(val.clone(), ty.clone());
-                    }
+                    return Err(LowerError::TypeMismatch {
+                        expected: ty.clone(),
+                        found: val.get_type(),
+                    });
                 }
             }
         }
@@ -1741,9 +1728,8 @@ impl<'a> FunctionBuilder<'a> {
         let operand = self.lower_expression(&node.expr)?;
         let res_ty = match self.node_value_type(node.node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) | Err(LowerError::MissingType(_)) => {
-                convert_type_node(self.type_ctx, &node.type_name)
-                    .unwrap_or_else(|| operand.get_type())
+            Ok(None) => {
+                return Err(LowerError::MissingType(node.node_id));
             }
             Err(e) => return Err(e),
         };
@@ -2331,26 +2317,15 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(value);
         }
 
-        let expected = self.return_type.clone();
         let value_ty = value.get_type().clone();
-        if matches!(value_ty, IRType::Ptr(_)) && matches!(expected, IRType::Ptr(_)) {
-            Ok(self.ensure_pointer_type(value, expected))
-        } else if matches!(value_ty, IRType::Void) {
-            Ok(IRValue::Undef(expected))
-        } else {
-            match determine_cast_op(&value_ty, &expected) {
-                Ok(Some(op)) => Ok(self.emit_value_instr(
-                    IRInstructionKind::Cast {
-                        op,
-                        value,
-                        to_type: expected.clone(),
-                    },
-                    expected,
-                )),
-                Ok(None) => Ok(value),
-                Err(e) => Err(e),
-            }
+        if matches!(value, IRValue::Undef(_)) {
+            return Ok(IRValue::Undef(self.return_type.clone()));
         }
+
+        Err(LowerError::UnsupportedExpression(format!(
+            "cannot coerce return value from {:?} to {:?}, the value is {:?}",
+            value_ty, self.return_type, value
+        )))
     }
 
     // Lower an expression expected to yield an lvalue pointer
@@ -2464,7 +2439,7 @@ impl<'a> FunctionBuilder<'a> {
         let expected_ir = rx_to_ir_type(self.type_ctx, expected_rx);
         if matches!(expected_rx, RxType::Ref(_, _)) {
             if let Ok(ptr) = self.lower_lvalue_pointer(object) {
-                return Ok(self.ensure_pointer_type(ptr, expected_ir));
+                return Ok(self.ensure_pointer_type(ptr, expected_ir)?);
             }
             let value = self.lower_expression(object)?;
             if value.get_type() == expected_ir {
@@ -2482,7 +2457,7 @@ impl<'a> FunctionBuilder<'a> {
                 IRType::Ptr(Box::new(inner_ty.clone())),
             );
             self.emit_store(value, alloca.clone())?;
-            Ok(self.ensure_pointer_type(alloca, expected_ir))
+            Ok(self.ensure_pointer_type(alloca, expected_ir)?)
         } else {
             let value = self.lower_expression(object)?;
             if value.get_type() == expected_ir {
@@ -2490,7 +2465,7 @@ impl<'a> FunctionBuilder<'a> {
             } else if matches!(value.get_type(), IRType::Ptr(_))
                 && matches!(expected_ir, IRType::Ptr(_))
             {
-                Ok(self.ensure_pointer_type(value, expected_ir))
+                Ok(self.ensure_pointer_type(value, expected_ir)?)
             } else {
                 Err(LowerError::TypeMismatch {
                     expected: expected_ir,
@@ -2515,40 +2490,40 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    fn adjust_compare_op(&self, op: IRICmpOp, token: &TokenType, lhs: &ExpressionNode) -> IRICmpOp {
+    fn adjust_compare_op(
+        &self,
+        op: IRICmpOp,
+        token: &TokenType,
+        lhs: &ExpressionNode,
+    ) -> LowerResult<IRICmpOp> {
         let Some(lhs_id) = expression_node_id(lhs) else {
-            return op;
+            return Err(LowerError::UnsupportedExpression(
+                "cannot determine type for comparison".to_string(),
+            ));
         };
         let Some(rx_type) = self.type_ctx.get_type(lhs_id) else {
-            return op;
+            return Err(LowerError::MissingType(lhs_id));
         };
         if !is_unsigned_integer_type(&rx_type) {
-            return op;
+            return Ok(op);
         }
         match token {
-            TokenType::Gt => IRICmpOp::Ugt,
-            TokenType::GEq => IRICmpOp::Uge,
-            TokenType::Lt => IRICmpOp::Ult,
-            TokenType::LEq => IRICmpOp::Ule,
-            _ => op,
+            TokenType::Gt => Ok(IRICmpOp::Ugt),
+            TokenType::GEq => Ok(IRICmpOp::Uge),
+            TokenType::Lt => Ok(IRICmpOp::Ult),
+            TokenType::LEq => Ok(IRICmpOp::Ule),
+            _ => Ok(op),
         }
     }
 
-    fn ensure_pointer_type(&mut self, ptr: IRValue, expected_ty: IRType) -> IRValue {
+    fn ensure_pointer_type(&mut self, ptr: IRValue, expected_ty: IRType) -> LowerResult<IRValue> {
         if ptr.get_type() == expected_ty {
-            ptr
-        } else if matches!(ptr.get_type(), IRType::Ptr(_)) && matches!(expected_ty, IRType::Ptr(_))
-        {
-            self.emit_value_instr(
-                IRInstructionKind::Cast {
-                    op: IRCastOp::BitCast,
-                    value: ptr,
-                    to_type: expected_ty.clone(),
-                },
-                expected_ty,
-            )
+            Ok(ptr)
         } else {
-            ptr
+            return Err(LowerError::TypeMismatch {
+                expected: expected_ty,
+                found: ptr.get_type(),
+            });
         }
     }
 

@@ -236,6 +236,8 @@ pub enum IRType {
     Ptr(Box<IRType>),
     Struct { fields: Vec<IRType> },
     Array { elem_type: Box<IRType>, size: usize },
+    // auxiliary types for analysis
+    Never,
 }
 
 impl IRType {
