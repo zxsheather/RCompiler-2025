@@ -1185,48 +1185,92 @@ impl<'a> FunctionBuilder<'a> {
             }
             Err(e) => return Err(e),
         };
-        let layout = self
-            .type_ctx
-            .get_struct_layout(&literal.name.lexeme)
-            .ok_or_else(|| {
-                LowerError::UnsupportedExpression(format!(
-                    "unknown struct type: {}",
-                    &literal.name.lexeme
-                ))
-            })?;
-        let mut aggregate = IRValue::Undef(res_ty.clone());
-        for field in &literal.fields {
-            let field_name = field.name.lexeme.as_str();
-            let (index, field_layout) = layout
-                .fields
-                .iter()
-                .enumerate()
-                .find(|(_, f)| f.name == field_name)
-                .ok_or_else(|| {
-                    LowerError::UnsupportedExpression(format!(
-                        "struct {} has no field named {}",
-                        &literal.name.lexeme, field_name
-                    ))
-                })?;
+        // let layout = self
+        //     .type_ctx
+        //     .get_struct_layout(&literal.name.lexeme)
+        //     .ok_or_else(|| {
+        //         LowerError::UnsupportedExpression(format!(
+        //             "unknown struct type: {}",
+        //             &literal.name.lexeme
+        //         ))
+        //     })?;
+        let dest_ptr = self.emit_value_instr(
+            IRInstructionKind::Alloca {
+                alloc_type: res_ty.clone(),
+                align: None,
+            },
+            IRType::Ptr(Box::new(res_ty.clone())),
+        );
+        self.store_struct_literal(&dest_ptr, literal)?;
+        let aggregate = self.emit_value_instr(
+            IRInstructionKind::Load {
+                ptr: dest_ptr,
+                align: None,
+            },
+            res_ty.clone(),
+        );
+        // let mut aggregate = IRValue::Undef(res_ty.clone());
+        // for field in &literal.fields {
+        //     let field_name = field.name.lexeme.as_str();
+        //     let (index, field_layout) = layout
+        //         .fields
+        //         .iter()
+        //         .enumerate()
+        //         .find(|(_, f)| f.name == field_name)
+        //         .ok_or_else(|| {
+        //             LowerError::UnsupportedExpression(format!(
+        //                 "struct {} has no field named {}",
+        //                 &literal.name.lexeme, field_name
+        //             ))
+        //         })?;
 
-            let field_value = self.lower_expression(&field.value)?;
-            let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
-            if field_value.get_type() != field_ty {
-                return Err(LowerError::TypeMismatch {
-                    expected: field_ty,
-                    found: field_value.get_type(),
-                });
-            }
-            aggregate = self.emit_value_instr(
-                IRInstructionKind::InsertValue {
-                    aggregate,
-                    value: field_value,
-                    indices: vec![index],
-                },
-                res_ty.clone(),
-            );
-        }
+        //     let field_value = self.lower_expression(&field.value)?;
+        //     let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
+        //     if field_value.get_type() != field_ty {
+        //         return Err(LowerError::TypeMismatch {
+        //             expected: field_ty,
+        //             found: field_value.get_type(),
+        //         });
+        //     }
+        //     aggregate = self.emit_value_instr(
+        //         IRInstructionKind::InsertValue {
+        //             aggregate,
+        //             value: field_value,
+        //             indices: vec![index],
+        //         },
+        //         res_ty.clone(),
+        //     );
+        // }
         Ok(aggregate)
+    }
+
+    // Helper function to check if an expression is a zero value
+    fn is_zero_value(expr: &ExpressionNode) -> bool {
+        match expr {
+            ExpressionNode::IntegerLiteral(token, _) => token.lexeme == "0",
+            ExpressionNode::BoolLiteral(token, _) => token.lexeme == "false",
+            _ => false,
+        }
+    }
+
+    // Helper function to calculate struct size in bytes
+    fn calculate_struct_size(ty: &IRType) -> usize {
+        match ty {
+            IRType::Struct { fields } => fields.iter().map(|f| Self::calculate_type_size(f)).sum(),
+            _ => 0,
+        }
+    }
+
+    fn calculate_type_size(ty: &IRType) -> usize {
+        match ty {
+            IRType::I8 => 1,
+            IRType::I32 => 4,
+            IRType::I1 => 1,
+            IRType::Array { elem_type, size } => Self::calculate_type_size(elem_type) * size,
+            IRType::Struct { fields } => fields.iter().map(|f| Self::calculate_type_size(f)).sum(),
+            IRType::Ptr(_) => 4, // Assume 32-bit pointers
+            IRType::Void => 0,
+        }
     }
 
     fn lower_array_literal_expr(&mut self, literal: &ArrayLiteralNode) -> LowerResult<IRValue> {
@@ -2132,6 +2176,54 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             ArrayLiteralNode::Repeated { element, .. } => {
+                // Check if we can use memset optimization for zero values
+                let use_memset = length > 16
+                    && matches!(elem_ty, IRType::I8 | IRType::I32)
+                    && Self::is_zero_value(element);
+
+                if use_memset {
+                    // Calculate total bytes
+                    let elem_size = match elem_ty {
+                        IRType::I8 => 1,
+                        IRType::I32 => 4,
+                        _ => unreachable!(),
+                    };
+                    let total_bytes = length * elem_size;
+
+                    // Cast array pointer to i8*
+                    let i8_ptr = self.emit_value_instr(
+                        IRInstructionKind::Cast {
+                            op: IRCastOp::BitCast,
+                            value: dest_ptr.clone(),
+                            to_type: IRType::Ptr(Box::new(IRType::I8)),
+                        },
+                        IRType::Ptr(Box::new(IRType::I8)),
+                    );
+
+                    // Call llvm.memset
+                    self.emit_void_instr(IRInstructionKind::Call {
+                        callee: CallTarget::Direct("llvm.memset.p0.i32".to_string()),
+                        args: vec![
+                            i8_ptr,
+                            IRValue::ConstInt {
+                                value: 0,
+                                ty: IRType::I8,
+                            },
+                            IRValue::ConstInt {
+                                value: total_bytes as i64,
+                                ty: IRType::I32,
+                            },
+                            IRValue::ConstInt {
+                                value: 0,
+                                ty: IRType::I1,
+                            },
+                        ],
+                    });
+
+                    return Ok(());
+                }
+
+                // Fall back to element-by-element store
                 let mut cached_value: Option<IRValue> = None;
                 for index in 0..length {
                     let elem_ptr = self.emit_value_instr(
