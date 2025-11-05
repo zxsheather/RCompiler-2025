@@ -962,12 +962,26 @@ impl<'a> FunctionBuilder<'a> {
             let rhs = self.lower_expression(&node.right_operand)?;
             let result_ty = match self.node_value_type(node.node_id) {
                 Ok(Some(ty)) => ty,
-                Ok(None) => IRType::I1,
+                Ok(None) => IRType::I8, // Default to I8 for bool results
                 Err(e) => return Err(e),
             };
             let op = self.adjust_compare_op(op, &node.operator.token_type, &node.left_operand)?;
-            let cmp = self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, result_ty);
-            return Ok(cmp);
+
+            // ICmp returns i1 in LLVM, we need to extend it to i8
+            let cmp_i1 =
+                self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, IRType::I1);
+
+            // Zero-extend i1 to i8
+            let cmp_i8 = self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::ZExt,
+                    value: cmp_i1,
+                    to_type: result_ty.clone(),
+                },
+                result_ty,
+            );
+
+            return Ok(cmp_i8);
         }
         let op = map_binary_op(&node.operator.token_type).ok_or_else(|| {
             LowerError::UnsupportedExpression(format!(
@@ -1021,10 +1035,11 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(value)
             }
             TokenType::Not => match operand.get_type() {
-                IRType::I1 => {
+                IRType::I8 => {
+                    // For bool (stored as i8), XOR with 1
                     let one = IRValue::ConstInt {
                         value: 1,
-                        ty: IRType::I1,
+                        ty: IRType::I8,
                     };
                     let value = self.emit_value_instr(
                         IRInstructionKind::Binary {
@@ -1032,11 +1047,12 @@ impl<'a> FunctionBuilder<'a> {
                             lhs: operand,
                             rhs: one,
                         },
-                        IRType::I1,
+                        IRType::I8,
                     );
                     Ok(value)
                 }
-                IRType::I8 | IRType::I32 => {
+                IRType::I32 => {
+                    // For integers, bitwise NOT
                     let ty = operand.get_type();
                     let mask = IRValue::ConstInt {
                         value: -1,
@@ -1586,11 +1602,24 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn lower_if_expr(&mut self, node: &IfExprNode) -> LowerResult<IRValue> {
         let cond = self.lower_expression(&node.condition)?;
+
+        // Convert i8 bool to i1 for conditional branch using trunc
         let bool_cond = match cond.get_type() {
+            IRType::I8 => {
+                // Truncate i8 to i1
+                self.emit_value_instr(
+                    IRInstructionKind::Cast {
+                        op: IRCastOp::Trunc,
+                        value: cond,
+                        to_type: IRType::I1,
+                    },
+                    IRType::I1,
+                )
+            }
             IRType::I1 => cond,
             other => {
                 return Err(LowerError::TypeMismatch {
-                    expected: IRType::I1,
+                    expected: IRType::I8,
                     found: other,
                 });
             }
@@ -1673,14 +1702,28 @@ impl<'a> FunctionBuilder<'a> {
         // Condition block
         self.start_new_block(cond_label.clone());
         let cond_val = self.lower_expression(&node.condition)?;
-        if cond_val.get_type() != IRType::I1 {
-            return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
-                found: cond_val.get_type(),
-            });
-        }
+
+        // Convert i8 bool to i1 for conditional branch using trunc
+        let bool_cond = match cond_val.get_type() {
+            IRType::I8 => self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::Trunc,
+                    value: cond_val,
+                    to_type: IRType::I1,
+                },
+                IRType::I1,
+            ),
+            IRType::I1 => cond_val,
+            other => {
+                return Err(LowerError::TypeMismatch {
+                    expected: IRType::I8,
+                    found: other,
+                });
+            }
+        };
+
         self.emit_void_instr(IRInstructionKind::CondBr {
-            cond: cond_val,
+            cond: bool_cond,
             then_dest: body_label.clone(),
             else_dest: exit_label.clone(),
         });
@@ -1867,18 +1910,29 @@ impl<'a> FunctionBuilder<'a> {
         is_or: bool,
     ) -> LowerResult<IRValue> {
         let left_val = self.lower_expression(left)?;
-        if left_val.get_type() != IRType::I1 {
+        if left_val.get_type() != IRType::I8 {
             return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
+                expected: IRType::I8,
                 found: left_val.get_type(),
             });
         }
+
+        // Convert i8 to i1 for conditional branch using trunc
+        let left_i1 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::Trunc,
+                value: left_val.clone(),
+                to_type: IRType::I1,
+            },
+            IRType::I1,
+        );
+
         let rhs_label = self.fresh_label("rhs");
         let merge_label = self.fresh_label("logic_merge");
 
         let current_block_label = self.current_block.label.clone();
         self.emit_void_instr(IRInstructionKind::CondBr {
-            cond: left_val.clone(),
+            cond: left_i1,
             then_dest: if is_or {
                 merge_label.clone()
             } else {
@@ -1894,9 +1948,9 @@ impl<'a> FunctionBuilder<'a> {
         // RHS block
         self.start_new_block(rhs_label.clone());
         let right_val = self.lower_expression(right)?;
-        if right_val.get_type() != IRType::I1 {
+        if right_val.get_type() != IRType::I8 {
             return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
+                expected: IRType::I8,
                 found: right_val.get_type(),
             });
         }
@@ -1912,7 +1966,7 @@ impl<'a> FunctionBuilder<'a> {
 
         let res_ty = match self.node_value_type(node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) => IRType::I1,
+            Ok(None) => IRType::I8, // Default to I8 for bool
             Err(e) => return Err(e),
         };
         let short_const = IRValue::ConstInt {

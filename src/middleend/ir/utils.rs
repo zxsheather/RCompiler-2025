@@ -22,7 +22,7 @@ pub fn convert_type_node(type_ctx: &TypeContext, node: &TypeNode) -> Option<IRTy
         TypeNode::I32(_) | TypeNode::U32(_) | TypeNode::ISize(_) | TypeNode::USize(_) => {
             Some(IRType::I32)
         }
-        TypeNode::Bool(_) => Some(IRType::I1),
+        TypeNode::Bool(_) => Some(IRType::I8),
         TypeNode::Char(_) => Some(IRType::I8),
         TypeNode::Str(_) => Some(ir_type_for_str()),
         TypeNode::String(_) => Some(ir_type_for_string()),
@@ -58,7 +58,7 @@ pub fn rx_to_ir_type(type_ctx: &TypeContext, rx_type: &RxType) -> IRType {
         RxType::I32 | RxType::U32 | RxType::ISize | RxType::USize | RxType::IntLiteral => {
             IRType::I32
         }
-        RxType::Bool => IRType::I1,
+        RxType::Bool => IRType::I8,
         RxType::Char => IRType::I8,
         RxType::MainReturn => IRType::I32,
         RxType::Str => ir_type_for_str(),
