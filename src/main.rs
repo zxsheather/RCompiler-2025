@@ -1085,6 +1085,21 @@ fn main() {
         return;
     }
 
+    if flag == "--emit-ir" {
+        // Read source from stdin if no file provided, or from file if provided
+        let input_path = args.next().map(PathBuf::from);
+        let src = match read_source(input_path.as_deref().map(|p| p.to_str().unwrap())) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to read input: {e}");
+                return;
+            }
+        };
+        let code = run_emit_ir(src, input_path.as_deref());
+        if code != 0 { /* failure */ }
+        return;
+    }
+
     let pretty_flag = match flag.as_str() {
         "--ast-pretty" => true,
         "--ast-json" => false,
@@ -1147,4 +1162,75 @@ fn main() {
     if code != 0 {
         // non-zero exit code path (no process::exit to preserve Drops)
     }
+}
+
+fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
+    let start_time = Instant::now();
+
+    // Lex
+    let mut lexer = match Lexer::new(src) {
+        Ok(lx) => lx,
+        Err(e) => {
+            eprintln!("lex error: {e}");
+            return 1;
+        }
+    };
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("lex error: {e}");
+            return 1;
+        }
+    };
+
+    // Parse
+    let mut parser = Parser::new(tokens);
+    let nodes = match parser.parse() {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("parse error: {e}");
+            return 1;
+        }
+    };
+
+    // Analyze
+    let mut analyzer = Analyzer::new();
+    if let Err(e) = analyzer.analyse_program(&nodes) {
+        eprintln!("semantic error: {e}");
+        return 1;
+    }
+
+    // Lower to IR
+    let module_name = input_module_name(None, false, input_path);
+    let lower = Lower::new(&nodes, &analyzer.type_context);
+    let ir_module = match lower.lower_program(&module_name) {
+        Ok(module) => module,
+        Err(err) => {
+            eprintln!("lowering error: {err}");
+            return 1;
+        }
+    };
+    let ir_text = emit_module(&ir_module);
+
+    // Validate
+    if let Err(err) = validate_with_llvm_as(&ir_text) {
+        eprintln!("LLVM IR validation error: {err}");
+        return 1;
+    }
+
+    // Output to stdout
+    println!("{}", ir_text);
+
+    let duration = start_time.elapsed();
+
+    // Don't print timing when emitting IR, as it pollutes the IR output
+    // The `run_emit_ir` function is implicitly for emitting IR, so we always skip timing here.
+    // if !emit_ir { // `emit_ir` is not defined in this scope.
+    //     eprintln!(\"Total time: {:.3}ms\", duration.as_secs_f64() * 1000.0);
+    // }
+    // The instruction was to "Comment out the timing output when emit_ir is true".
+    // Since this function *is* the emit_ir path, we simply comment out the timing.
+    // eprintln!("Total time: {:.3}ms", duration.as_secs_f64() * 1000.0);
+
+    0
 }

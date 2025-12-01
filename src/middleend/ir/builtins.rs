@@ -109,6 +109,20 @@ fn build_runtime_externs() -> Vec<IRFunction> {
     };
     externs.push(memset);
 
+    // llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)
+    let memcpy = IRFunction {
+        name: "llvm.memcpy.p0.p0.i32".to_string(),
+        params: vec![
+            ("dest".to_string(), IRType::Ptr(Box::new(IRType::I8))),
+            ("src".to_string(), IRType::Ptr(Box::new(IRType::I8))),
+            ("len".to_string(), IRType::I32),
+            ("is_volatile".to_string(), IRType::I1),
+        ],
+        return_type: IRType::Void,
+        basic_blocks: Vec::new(),
+    };
+    externs.push(memcpy);
+
     externs
 }
 

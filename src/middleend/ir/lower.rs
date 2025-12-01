@@ -36,6 +36,10 @@ use crate::{
 
 pub const ENTRY_BLOCK_LABEL: &str = "fn_entry";
 
+fn should_use_sret(ty: &IRType) -> bool {
+    matches!(ty, IRType::Struct { .. })
+}
+
 pub struct Lower<'a> {
     nodes: &'a [AstNode],
     type_ctx: &'a TypeContext,
@@ -520,6 +524,7 @@ pub struct FunctionBuilder<'a> {
     loop_stack: Vec<LoopFrame>,
     param_mutability: HashMap<String, bool>,
     entry_allocas: Vec<IRInstruction>,
+    sret_ptr: Option<IRValue>,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -547,7 +552,29 @@ impl<'a> FunctionBuilder<'a> {
             param_mutability.insert(param.name.lexeme.clone(), param.mutable);
             params.push((param.name.lexeme.clone(), ty));
         }
-        let return_type = determine_return_type(type_ctx, func, return_hint);
+        let mut sret_ptr = None;
+        let mut return_type = determine_return_type(type_ctx, func, return_hint);
+
+        if should_use_sret(&return_type) {
+            let sret_arg_name = "__sret_ptr".to_string();
+            let sret_ty = IRType::Ptr(Box::new(return_type.clone()));
+            params.insert(0, (sret_arg_name.clone(), sret_ty.clone()));
+
+            // We need to bind this argument later, but for now we just need to know it exists
+            // Actually, we can create the IRValue for it here or just remember to use argument 0
+            // The `lower_function_body` iterates over `params`, so it will see this new param.
+            // We just need to identify which one is the sret pointer.
+
+            // Wait, `lower_function_body` iterates `self.params`. So if we insert into `params` here,
+            // it will be treated as a normal argument.
+            // We need to capture the IRValue corresponding to this argument.
+            // Since `lower_function_body` creates the IRValues, we can't capture it here easily unless we pre-create it.
+            // But `lower_function_body` does the binding.
+
+            // Let's change `return_type` to Void for the function signature.
+            // But keep the original return type for logic? No, the function signature should be Void.
+            return_type = IRType::Void;
+        }
 
         Ok(Self {
             func,
@@ -566,6 +593,7 @@ impl<'a> FunctionBuilder<'a> {
             loop_stack: Vec::new(),
             param_mutability,
             entry_allocas: Vec::new(),
+            sret_ptr,
         })
     }
 
@@ -578,6 +606,12 @@ impl<'a> FunctionBuilder<'a> {
                 name: Some(name.clone()),
                 ty: ty.clone(),
             };
+
+            if name == "__sret_ptr" {
+                self.sret_ptr = Some(arg.clone());
+                self.bind_value(name.clone(), Binding::Value(arg));
+                continue;
+            }
 
             let requires_stack_slot = self.param_mutability.get(name).cloned().unwrap_or(false)
                 || matches!(ty, IRType::Array { .. } | IRType::Struct { .. });
@@ -600,20 +634,37 @@ impl<'a> FunctionBuilder<'a> {
         let result = self.lower_block(&self.func.body)?;
 
         if !self.has_terminated() {
-            match (&self.return_type, result) {
-                (IRType::Void, _) => self.emit_return(None),
-                (_, Some(value)) => {
-                    let coerced = self.coerce_to_return_type(value)?;
-                    self.emit_return(Some(coerced));
-                }
-                (IRType::I32, None) if self.func.name.lexeme == "main" => {
-                    let zero = const_i32(0);
-                    self.emit_return(Some(zero));
-                }
-                (_, None) => {
+            if let Some(sret) = &self.sret_ptr {
+                if let Some(value) = result {
+                    // We need to store the result into the sret pointer
+                    // The value might need coercion if it's not exactly the same type (unlikely if type checked)
+                    // But `coerce_to_return_type` uses `self.return_type` which is now Void.
+                    // We should use the original return type for coercion if we had it.
+                    // But `value` should already be the correct type from `lower_block`.
+                    self.emit_store(value, sret.clone())?;
+                    self.emit_return(None);
+                } else {
+                    // If result is None but we have sret, it means we are missing a return value
                     return Err(LowerError::MissingReturnValue(
                         self.func.name.lexeme.clone(),
                     ));
+                }
+            } else {
+                match (&self.return_type, result) {
+                    (IRType::Void, _) => self.emit_return(None),
+                    (_, Some(value)) => {
+                        let coerced = self.coerce_to_return_type(value)?;
+                        self.emit_return(Some(coerced));
+                    }
+                    (IRType::I32, None) if self.func.name.lexeme == "main" => {
+                        let zero = const_i32(0);
+                        self.emit_return(Some(zero));
+                    }
+                    (_, None) => {
+                        return Err(LowerError::MissingReturnValue(
+                            self.func.name.lexeme.clone(),
+                        ));
+                    }
                 }
             }
         }
@@ -765,6 +816,24 @@ impl<'a> FunctionBuilder<'a> {
             },
             ptr_ty.clone(),
         );
+
+        // Memcpy optimization: detect identifier-to-identifier assignment of large aggregates
+        if let Some(expr) = &node.value {
+            if let ExpressionNode::Identifier(src_token, _) = expr {
+                if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
+                    if matches!(value_type, IRType::Struct { .. } | IRType::Array { .. }) {
+                        let size = Self::calculate_type_size(&value_type);
+                        if size >= 16 {
+                            // Use memcpy for large aggregates
+                            self.emit_memcpy(alloca.clone(), src_ptr, &value_type)?;
+                            self.bind_value(var_name, Binding::Pointer(alloca));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(expr) = &node.value {
             if !self.store_literal_into_pointer(&alloca, expr)? {
                 let init_val = self.lower_expression(expr)?;
@@ -780,12 +849,33 @@ impl<'a> FunctionBuilder<'a> {
         let target = self
             .lookup_binding(&node.identifier.lexeme)
             .ok_or_else(|| LowerError::UndefinedIdentifier(node.identifier.lexeme.clone()))?;
-        let Binding::Pointer(ptr) = target else {
+        let Binding::Pointer(dest_ptr) = target else {
             return Err(LowerError::ImmutableBinding(node.identifier.lexeme.clone()));
         };
-        if !self.store_literal_into_pointer(&ptr, &node.value)? {
+
+        // Memcpy optimization: detect identifier-to-identifier assignment of large aggregates
+        if let ExpressionNode::Identifier(src_token, _) = &node.value {
+            if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
+                // Get the type of the destination
+                if let IRType::Ptr(inner_ty) = dest_ptr.get_type() {
+                    if matches!(
+                        inner_ty.as_ref(),
+                        IRType::Struct { .. } | IRType::Array { .. }
+                    ) {
+                        let size = Self::calculate_type_size(&inner_ty);
+                        if size >= 16 {
+                            // Use memcpy for large aggregates
+                            self.emit_memcpy(dest_ptr.clone(), src_ptr, &inner_ty)?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        if !self.store_literal_into_pointer(&dest_ptr, &node.value)? {
             let value = self.lower_expression(&node.value)?;
-            self.emit_store(value, ptr.clone())?;
+            self.emit_store(value, dest_ptr.clone())?;
         }
         Ok(())
     }
@@ -822,6 +912,11 @@ impl<'a> FunctionBuilder<'a> {
             ExpressionNode::Continue(node) => self.lower_continue_expr(node),
             ExpressionNode::Return(node) => {
                 self.lower_return(node)?;
+                // After return, the control flow is interrupted.
+                // We return Undef because this value shouldn't be used.
+                // But we need to return something that matches the expected type if we are in an expression context?
+                // Actually `lower_return` emits a Ret instruction which is a terminator.
+                // So subsequent instructions in this block are unreachable.
                 Ok(IRValue::Undef(IRType::Void))
             }
             ExpressionNode::As(node) => self.lower_as_expr(node),
@@ -1255,22 +1350,46 @@ impl<'a> FunctionBuilder<'a> {
 
     // Helper function to calculate struct size in bytes
     fn calculate_struct_size(ty: &IRType) -> usize {
-        match ty {
-            IRType::Struct { fields } => fields.iter().map(|f| Self::calculate_type_size(f)).sum(),
-            _ => 0,
-        }
+        Self::type_layout(ty).0
     }
 
     fn calculate_type_size(ty: &IRType) -> usize {
+        Self::type_layout(ty).0
+    }
+
+    fn type_layout(ty: &IRType) -> (usize, usize) {
         match ty {
-            IRType::I8 => 1,
-            IRType::I32 => 4,
-            IRType::I1 => 1,
-            IRType::Array { elem_type, size } => Self::calculate_type_size(elem_type) * size,
-            IRType::Struct { fields } => fields.iter().map(|f| Self::calculate_type_size(f)).sum(),
-            IRType::Ptr(_) => 4, // Assume 32-bit pointers
-            IRType::Void => 0,
+            IRType::I1 | IRType::I8 => (1, 1),
+            IRType::I32 => (4, 4),
+            IRType::Ptr(_) => (8, 8),
+            IRType::Array { elem_type, size } => {
+                let (elem_size, elem_align) = Self::type_layout(elem_type);
+                let stride = Self::align_to(elem_size, elem_align);
+                (stride * size, elem_align)
+            }
+            IRType::Struct { fields } => {
+                let mut offset = 0usize;
+                let mut max_align = 1usize;
+                for field in fields {
+                    let (field_size, field_align) = Self::type_layout(field);
+                    offset = Self::align_to(offset, field_align);
+                    offset += field_size;
+                    if field_align > max_align {
+                        max_align = field_align;
+                    }
+                }
+                let total_size = Self::align_to(offset, max_align);
+                (total_size, max_align)
+            }
+            IRType::Void => (0, 1),
         }
+    }
+
+    fn align_to(value: usize, align: usize) -> usize {
+        if align <= 1 {
+            return value;
+        }
+        ((value + align - 1) / align) * align
     }
 
     fn lower_array_literal_expr(&mut self, literal: &ArrayLiteralNode) -> LowerResult<IRValue> {
@@ -1512,9 +1631,32 @@ impl<'a> FunctionBuilder<'a> {
             Err(e) => return Err(e),
         };
         let call_ty = ret_ty.or(return_hint);
+
         if let Some(ty) = call_ty {
-            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
-            Ok(value)
+            if should_use_sret(&ty) {
+                // SRET handling
+                let alloca = self.emit_value_instr(
+                    IRInstructionKind::Alloca {
+                        alloc_type: ty.clone(),
+                        align: None,
+                    },
+                    IRType::Ptr(Box::new(ty.clone())),
+                );
+                args.insert(0, alloca.clone());
+                self.emit_void_instr(IRInstructionKind::Call { callee, args });
+
+                let load = self.emit_value_instr(
+                    IRInstructionKind::Load {
+                        ptr: alloca,
+                        align: None,
+                    },
+                    ty,
+                );
+                Ok(load)
+            } else {
+                let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+                Ok(value)
+            }
         } else {
             self.emit_void_instr(IRInstructionKind::Call { callee, args });
             Ok(IRValue::Undef(IRType::Void))
@@ -1595,8 +1737,30 @@ impl<'a> FunctionBuilder<'a> {
             Err(e) => return Err(e),
         };
         if let Some(ty) = res_ty {
-            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
-            Ok(value)
+            if should_use_sret(&ty) {
+                // SRET handling for method calls
+                let alloca = self.emit_value_instr(
+                    IRInstructionKind::Alloca {
+                        alloc_type: ty.clone(),
+                        align: None,
+                    },
+                    IRType::Ptr(Box::new(ty.clone())),
+                );
+                args.insert(0, alloca.clone());
+                self.emit_void_instr(IRInstructionKind::Call { callee, args });
+
+                let load = self.emit_value_instr(
+                    IRInstructionKind::Load {
+                        ptr: alloca,
+                        align: None,
+                    },
+                    ty,
+                );
+                Ok(load)
+            } else {
+                let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+                Ok(value)
+            }
         } else {
             self.emit_void_instr(IRInstructionKind::Call { callee, args });
             Ok(IRValue::Undef(IRType::Void))
@@ -2053,6 +2217,19 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn lower_return(&mut self, ret: &ReturnExprNode) -> LowerResult<()> {
+        if let Some(sret) = self.sret_ptr.clone() {
+            if let Some(expr) = &ret.value {
+                let value = self.lower_expression(expr)?;
+                self.emit_store(value, sret)?;
+            } else {
+                return Err(LowerError::MissingReturnValue(
+                    self.func.name.lexeme.clone(),
+                ));
+            }
+            self.emit_return(None);
+            return Ok(());
+        }
+
         if matches!(self.return_type, IRType::Void) {
             if let Some(expr) = &ret.value {
                 self.lower_expression(expr)?;
@@ -2403,10 +2580,85 @@ impl<'a> FunctionBuilder<'a> {
                 "cannot store void value".to_string(),
             ));
         }
+        // Memcpy optimization for Load+Store of large aggregates
+        // Check if we're storing a value that was just loaded from another aggregate
+        if let IRValue::InstructionRef { id, ty } = &value {
+            if matches!(ty, IRType::Struct { .. } | IRType::Array { .. }) {
+                let size = Self::calculate_type_size(ty);
+                if size >= 16 {
+                    // Find if this is from a Load instruction
+                    if let Some(src_ptr) = self.find_load_source(id) {
+                        // Use memcpy instead of storing the loaded value
+                        // Note: We keep the Load instruction as it might be used elsewhere
+                        // LLVM will optimize away redundant loads if needed
+                        self.emit_memcpy(ptr, src_ptr, ty)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         self.emit_void_instr(IRInstructionKind::Store {
             value,
             ptr,
             align: None,
+        });
+        Ok(())
+    }
+
+    fn find_load_source(&self, id: &str) -> Option<IRValue> {
+        // Search backwards through instructions to find the Load that produced this value
+        for instr in self.current_block.instructions.iter().rev() {
+            if let Some(res) = &instr.result {
+                if let IRValue::InstructionRef { id: res_id, .. } = res {
+                    if res_id == id {
+                        if let IRInstructionKind::Load { ptr, .. } = &instr.kind {
+                            return Some(ptr.clone());
+                        }
+                        return None; // Found the instruction but it's not a Load
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn emit_memcpy(&mut self, dest: IRValue, src: IRValue, ty: &IRType) -> LowerResult<()> {
+        let size = Self::calculate_type_size(ty);
+
+        // Cast dest to i8*
+        let dest_i8 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::BitCast,
+                value: dest,
+                to_type: IRType::Ptr(Box::new(IRType::I8)),
+            },
+            IRType::Ptr(Box::new(IRType::I8)),
+        );
+
+        // Cast src to i8*
+        let src_i8 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::BitCast,
+                value: src,
+                to_type: IRType::Ptr(Box::new(IRType::I8)),
+            },
+            IRType::Ptr(Box::new(IRType::I8)),
+        );
+
+        let size_val = IRValue::ConstInt {
+            value: size as i64,
+            ty: IRType::I32,
+        };
+
+        let volatile = IRValue::ConstInt {
+            value: 0,
+            ty: IRType::I1,
+        };
+
+        self.emit_void_instr(IRInstructionKind::Call {
+            callee: CallTarget::Direct("llvm.memcpy.p0.p0.i32".to_string()),
+            args: vec![dest_i8, src_i8, size_val, volatile],
         });
         Ok(())
     }
