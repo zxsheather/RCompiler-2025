@@ -103,6 +103,8 @@ pub fn compile_and_run_ir(
         .arg(runtime_path)
         .arg("-o")
         .arg(&exe_path)
+        // Set stack size to 16 MB for large struct tests
+        // .arg("-Wl,-stack_size,0x1000000") // 16 MB on macOS
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -505,7 +507,6 @@ impl LLVMEmitter {
             IRType::Array { elem_type, size } => {
                 format!("[{} x {}]", size, self.format_type(elem_type))
             }
-            IRType::Never => "undef".to_string(),
         }
     }
 

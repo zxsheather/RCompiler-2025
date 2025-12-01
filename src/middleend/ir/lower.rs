@@ -36,6 +36,10 @@ use crate::{
 
 pub const ENTRY_BLOCK_LABEL: &str = "fn_entry";
 
+fn should_use_sret(ty: &IRType) -> bool {
+    matches!(ty, IRType::Struct { .. })
+}
+
 pub struct Lower<'a> {
     nodes: &'a [AstNode],
     type_ctx: &'a TypeContext,
@@ -520,6 +524,7 @@ pub struct FunctionBuilder<'a> {
     loop_stack: Vec<LoopFrame>,
     param_mutability: HashMap<String, bool>,
     entry_allocas: Vec<IRInstruction>,
+    sret_ptr: Option<IRValue>,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -547,7 +552,29 @@ impl<'a> FunctionBuilder<'a> {
             param_mutability.insert(param.name.lexeme.clone(), param.mutable);
             params.push((param.name.lexeme.clone(), ty));
         }
-        let return_type = determine_return_type(type_ctx, func, return_hint);
+        let mut sret_ptr = None;
+        let mut return_type = determine_return_type(type_ctx, func, return_hint);
+
+        if should_use_sret(&return_type) {
+            let sret_arg_name = "__sret_ptr".to_string();
+            let sret_ty = IRType::Ptr(Box::new(return_type.clone()));
+            params.insert(0, (sret_arg_name.clone(), sret_ty.clone()));
+
+            // We need to bind this argument later, but for now we just need to know it exists
+            // Actually, we can create the IRValue for it here or just remember to use argument 0
+            // The `lower_function_body` iterates over `params`, so it will see this new param.
+            // We just need to identify which one is the sret pointer.
+
+            // Wait, `lower_function_body` iterates `self.params`. So if we insert into `params` here,
+            // it will be treated as a normal argument.
+            // We need to capture the IRValue corresponding to this argument.
+            // Since `lower_function_body` creates the IRValues, we can't capture it here easily unless we pre-create it.
+            // But `lower_function_body` does the binding.
+
+            // Let's change `return_type` to Void for the function signature.
+            // But keep the original return type for logic? No, the function signature should be Void.
+            return_type = IRType::Void;
+        }
 
         Ok(Self {
             func,
@@ -566,6 +593,7 @@ impl<'a> FunctionBuilder<'a> {
             loop_stack: Vec::new(),
             param_mutability,
             entry_allocas: Vec::new(),
+            sret_ptr,
         })
     }
 
@@ -578,6 +606,12 @@ impl<'a> FunctionBuilder<'a> {
                 name: Some(name.clone()),
                 ty: ty.clone(),
             };
+
+            if name == "__sret_ptr" {
+                self.sret_ptr = Some(arg.clone());
+                self.bind_value(name.clone(), Binding::Value(arg));
+                continue;
+            }
 
             let requires_stack_slot = self.param_mutability.get(name).cloned().unwrap_or(false)
                 || matches!(ty, IRType::Array { .. } | IRType::Struct { .. });
@@ -600,20 +634,37 @@ impl<'a> FunctionBuilder<'a> {
         let result = self.lower_block(&self.func.body)?;
 
         if !self.has_terminated() {
-            match (&self.return_type, result) {
-                (IRType::Void, _) => self.emit_return(None),
-                (_, Some(value)) => {
-                    let coerced = self.coerce_to_return_type(value)?;
-                    self.emit_return(Some(coerced));
-                }
-                (IRType::I32, None) if self.func.name.lexeme == "main" => {
-                    let zero = const_i32(0);
-                    self.emit_return(Some(zero));
-                }
-                (_, None) => {
+            if let Some(sret) = &self.sret_ptr {
+                if let Some(value) = result {
+                    // We need to store the result into the sret pointer
+                    // The value might need coercion if it's not exactly the same type (unlikely if type checked)
+                    // But `coerce_to_return_type` uses `self.return_type` which is now Void.
+                    // We should use the original return type for coercion if we had it.
+                    // But `value` should already be the correct type from `lower_block`.
+                    self.emit_store(value, sret.clone())?;
+                    self.emit_return(None);
+                } else {
+                    // If result is None but we have sret, it means we are missing a return value
                     return Err(LowerError::MissingReturnValue(
                         self.func.name.lexeme.clone(),
                     ));
+                }
+            } else {
+                match (&self.return_type, result) {
+                    (IRType::Void, _) => self.emit_return(None),
+                    (_, Some(value)) => {
+                        let coerced = self.coerce_to_return_type(value)?;
+                        self.emit_return(Some(coerced));
+                    }
+                    (IRType::I32, None) if self.func.name.lexeme == "main" => {
+                        let zero = const_i32(0);
+                        self.emit_return(Some(zero));
+                    }
+                    (_, None) => {
+                        return Err(LowerError::MissingReturnValue(
+                            self.func.name.lexeme.clone(),
+                        ));
+                    }
                 }
             }
         }
@@ -765,6 +816,24 @@ impl<'a> FunctionBuilder<'a> {
             },
             ptr_ty.clone(),
         );
+
+        // Memcpy optimization: detect identifier-to-identifier assignment of large aggregates
+        if let Some(expr) = &node.value {
+            if let ExpressionNode::Identifier(src_token, _) = expr {
+                if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
+                    if matches!(value_type, IRType::Struct { .. } | IRType::Array { .. }) {
+                        let size = Self::calculate_type_size(&value_type);
+                        if size >= 16 {
+                            // Use memcpy for large aggregates
+                            self.emit_memcpy(alloca.clone(), src_ptr, &value_type)?;
+                            self.bind_value(var_name, Binding::Pointer(alloca));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(expr) = &node.value {
             if !self.store_literal_into_pointer(&alloca, expr)? {
                 let init_val = self.lower_expression(expr)?;
@@ -780,12 +849,33 @@ impl<'a> FunctionBuilder<'a> {
         let target = self
             .lookup_binding(&node.identifier.lexeme)
             .ok_or_else(|| LowerError::UndefinedIdentifier(node.identifier.lexeme.clone()))?;
-        let Binding::Pointer(ptr) = target else {
+        let Binding::Pointer(dest_ptr) = target else {
             return Err(LowerError::ImmutableBinding(node.identifier.lexeme.clone()));
         };
-        if !self.store_literal_into_pointer(&ptr, &node.value)? {
+
+        // Memcpy optimization: detect identifier-to-identifier assignment of large aggregates
+        if let ExpressionNode::Identifier(src_token, _) = &node.value {
+            if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
+                // Get the type of the destination
+                if let IRType::Ptr(inner_ty) = dest_ptr.get_type() {
+                    if matches!(
+                        inner_ty.as_ref(),
+                        IRType::Struct { .. } | IRType::Array { .. }
+                    ) {
+                        let size = Self::calculate_type_size(&inner_ty);
+                        if size >= 16 {
+                            // Use memcpy for large aggregates
+                            self.emit_memcpy(dest_ptr.clone(), src_ptr, &inner_ty)?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        if !self.store_literal_into_pointer(&dest_ptr, &node.value)? {
             let value = self.lower_expression(&node.value)?;
-            self.emit_store(value, ptr.clone())?;
+            self.emit_store(value, dest_ptr.clone())?;
         }
         Ok(())
     }
@@ -822,6 +912,11 @@ impl<'a> FunctionBuilder<'a> {
             ExpressionNode::Continue(node) => self.lower_continue_expr(node),
             ExpressionNode::Return(node) => {
                 self.lower_return(node)?;
+                // After return, the control flow is interrupted.
+                // We return Undef because this value shouldn't be used.
+                // But we need to return something that matches the expected type if we are in an expression context?
+                // Actually `lower_return` emits a Ret instruction which is a terminator.
+                // So subsequent instructions in this block are unreachable.
                 Ok(IRValue::Undef(IRType::Void))
             }
             ExpressionNode::As(node) => self.lower_as_expr(node),
@@ -962,12 +1057,26 @@ impl<'a> FunctionBuilder<'a> {
             let rhs = self.lower_expression(&node.right_operand)?;
             let result_ty = match self.node_value_type(node.node_id) {
                 Ok(Some(ty)) => ty,
-                Ok(None) => IRType::I1,
+                Ok(None) => IRType::I8, // Default to I8 for bool results
                 Err(e) => return Err(e),
             };
             let op = self.adjust_compare_op(op, &node.operator.token_type, &node.left_operand)?;
-            let cmp = self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, result_ty);
-            return Ok(cmp);
+
+            // ICmp returns i1 in LLVM, we need to extend it to i8
+            let cmp_i1 =
+                self.emit_value_instr(IRInstructionKind::ICmp { op, lhs, rhs }, IRType::I1);
+
+            // Zero-extend i1 to i8
+            let cmp_i8 = self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::ZExt,
+                    value: cmp_i1,
+                    to_type: result_ty.clone(),
+                },
+                result_ty,
+            );
+
+            return Ok(cmp_i8);
         }
         let op = map_binary_op(&node.operator.token_type).ok_or_else(|| {
             LowerError::UnsupportedExpression(format!(
@@ -1021,10 +1130,11 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(value)
             }
             TokenType::Not => match operand.get_type() {
-                IRType::I1 => {
+                IRType::I8 => {
+                    // For bool (stored as i8), XOR with 1
                     let one = IRValue::ConstInt {
                         value: 1,
-                        ty: IRType::I1,
+                        ty: IRType::I8,
                     };
                     let value = self.emit_value_instr(
                         IRInstructionKind::Binary {
@@ -1032,11 +1142,12 @@ impl<'a> FunctionBuilder<'a> {
                             lhs: operand,
                             rhs: one,
                         },
-                        IRType::I1,
+                        IRType::I8,
                     );
                     Ok(value)
                 }
-                IRType::I8 | IRType::I32 => {
+                IRType::I32 => {
+                    // For integers, bitwise NOT
                     let ty = operand.get_type();
                     let mask = IRValue::ConstInt {
                         value: -1,
@@ -1169,48 +1280,116 @@ impl<'a> FunctionBuilder<'a> {
             }
             Err(e) => return Err(e),
         };
-        let layout = self
-            .type_ctx
-            .get_struct_layout(&literal.name.lexeme)
-            .ok_or_else(|| {
-                LowerError::UnsupportedExpression(format!(
-                    "unknown struct type: {}",
-                    &literal.name.lexeme
-                ))
-            })?;
-        let mut aggregate = IRValue::Undef(res_ty.clone());
-        for field in &literal.fields {
-            let field_name = field.name.lexeme.as_str();
-            let (index, field_layout) = layout
-                .fields
-                .iter()
-                .enumerate()
-                .find(|(_, f)| f.name == field_name)
-                .ok_or_else(|| {
-                    LowerError::UnsupportedExpression(format!(
-                        "struct {} has no field named {}",
-                        &literal.name.lexeme, field_name
-                    ))
-                })?;
+        // let layout = self
+        //     .type_ctx
+        //     .get_struct_layout(&literal.name.lexeme)
+        //     .ok_or_else(|| {
+        //         LowerError::UnsupportedExpression(format!(
+        //             "unknown struct type: {}",
+        //             &literal.name.lexeme
+        //         ))
+        //     })?;
+        let dest_ptr = self.emit_value_instr(
+            IRInstructionKind::Alloca {
+                alloc_type: res_ty.clone(),
+                align: None,
+            },
+            IRType::Ptr(Box::new(res_ty.clone())),
+        );
+        self.store_struct_literal(&dest_ptr, literal)?;
+        let aggregate = self.emit_value_instr(
+            IRInstructionKind::Load {
+                ptr: dest_ptr,
+                align: None,
+            },
+            res_ty.clone(),
+        );
+        // let mut aggregate = IRValue::Undef(res_ty.clone());
+        // for field in &literal.fields {
+        //     let field_name = field.name.lexeme.as_str();
+        //     let (index, field_layout) = layout
+        //         .fields
+        //         .iter()
+        //         .enumerate()
+        //         .find(|(_, f)| f.name == field_name)
+        //         .ok_or_else(|| {
+        //             LowerError::UnsupportedExpression(format!(
+        //                 "struct {} has no field named {}",
+        //                 &literal.name.lexeme, field_name
+        //             ))
+        //         })?;
 
-            let field_value = self.lower_expression(&field.value)?;
-            let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
-            if field_value.get_type() != field_ty {
-                return Err(LowerError::TypeMismatch {
-                    expected: field_ty,
-                    found: field_value.get_type(),
-                });
-            }
-            aggregate = self.emit_value_instr(
-                IRInstructionKind::InsertValue {
-                    aggregate,
-                    value: field_value,
-                    indices: vec![index],
-                },
-                res_ty.clone(),
-            );
-        }
+        //     let field_value = self.lower_expression(&field.value)?;
+        //     let field_ty = rx_to_ir_type(self.type_ctx, &field_layout.ty);
+        //     if field_value.get_type() != field_ty {
+        //         return Err(LowerError::TypeMismatch {
+        //             expected: field_ty,
+        //             found: field_value.get_type(),
+        //         });
+        //     }
+        //     aggregate = self.emit_value_instr(
+        //         IRInstructionKind::InsertValue {
+        //             aggregate,
+        //             value: field_value,
+        //             indices: vec![index],
+        //         },
+        //         res_ty.clone(),
+        //     );
+        // }
         Ok(aggregate)
+    }
+
+    // Helper function to check if an expression is a zero value
+    fn is_zero_value(expr: &ExpressionNode) -> bool {
+        match expr {
+            ExpressionNode::IntegerLiteral(token, _) => token.lexeme == "0",
+            ExpressionNode::BoolLiteral(token, _) => token.lexeme == "false",
+            _ => false,
+        }
+    }
+
+    // Helper function to calculate struct size in bytes
+    fn calculate_struct_size(ty: &IRType) -> usize {
+        Self::type_layout(ty).0
+    }
+
+    fn calculate_type_size(ty: &IRType) -> usize {
+        Self::type_layout(ty).0
+    }
+
+    fn type_layout(ty: &IRType) -> (usize, usize) {
+        match ty {
+            IRType::I1 | IRType::I8 => (1, 1),
+            IRType::I32 => (4, 4),
+            IRType::Ptr(_) => (8, 8),
+            IRType::Array { elem_type, size } => {
+                let (elem_size, elem_align) = Self::type_layout(elem_type);
+                let stride = Self::align_to(elem_size, elem_align);
+                (stride * size, elem_align)
+            }
+            IRType::Struct { fields } => {
+                let mut offset = 0usize;
+                let mut max_align = 1usize;
+                for field in fields {
+                    let (field_size, field_align) = Self::type_layout(field);
+                    offset = Self::align_to(offset, field_align);
+                    offset += field_size;
+                    if field_align > max_align {
+                        max_align = field_align;
+                    }
+                }
+                let total_size = Self::align_to(offset, max_align);
+                (total_size, max_align)
+            }
+            IRType::Void => (0, 1),
+        }
+    }
+
+    fn align_to(value: usize, align: usize) -> usize {
+        if align <= 1 {
+            return value;
+        }
+        ((value + align - 1) / align) * align
     }
 
     fn lower_array_literal_expr(&mut self, literal: &ArrayLiteralNode) -> LowerResult<IRValue> {
@@ -1236,9 +1415,10 @@ impl<'a> FunctionBuilder<'a> {
                 )));
             }
         };
-        let mut aggregate = IRValue::Undef(result_ty.clone());
+
         match literal {
             ArrayLiteralNode::Elements { elements, .. } => {
+                let mut aggregate = IRValue::Undef(result_ty.clone());
                 for (index, expr) in elements.iter().enumerate() {
                     let value = self.lower_expression(expr)?;
                     if value.get_type() != elem_ty {
@@ -1256,11 +1436,89 @@ impl<'a> FunctionBuilder<'a> {
                         result_ty.clone(),
                     );
                 }
+                Ok(aggregate)
             }
             ArrayLiteralNode::Repeated { element, .. } => {
+                // Check if we can use memset optimization
+                // memset can only be used when:
+                // 1. Element type is i8 or i32
+                // 2. The value is a constant 0
+                // 3. The array size is reasonably large (> 16 elements)
+                let use_memset = size > 16 && matches!(elem_ty, IRType::I8 | IRType::I32);
+
+                if use_memset {
+                    if let ExpressionNode::IntegerLiteral(token, _) = element.as_ref() {
+                        if token.lexeme == "0" {
+                            // Use memset optimization
+                            // Allocate the array on stack
+                            let alloc = self.emit_value_instr(
+                                IRInstructionKind::Alloca {
+                                    alloc_type: result_ty.clone(),
+                                    align: None,
+                                },
+                                IRType::Ptr(Box::new(result_ty.clone())),
+                            );
+
+                            // In newer LLVM versions, ptr types only need to emit ptr,
+                            // so we can directly use the alloc pointer as i8*. If we need
+                            // to cast, uncomment the following code.
+
+                            // let i8_ptr = self.emit_value_instr(
+                            //     IRInstructionKind::Cast {
+                            //         op: IRCastOp::BitCast,
+                            //         value: alloc.clone(),
+                            //         to_type: IRType::Ptr(Box::new(IRType::I8)),
+                            //     },
+                            //     IRType::Ptr(Box::new(IRType::I8)),
+                            // );
+
+                            // Calculate total bytes
+                            let elem_size = match elem_ty {
+                                IRType::I8 => 1,
+                                IRType::I32 => 4,
+                                _ => unreachable!(),
+                            };
+                            let total_bytes = size * elem_size;
+
+                            // Call llvm.memset.p0.i32(ptr, 0, size, false)
+                            self.emit_void_instr(IRInstructionKind::Call {
+                                callee: CallTarget::Direct("llvm.memset.p0.i32".to_string()),
+                                args: vec![
+                                    alloc.clone(),
+                                    IRValue::ConstInt {
+                                        value: 0,
+                                        ty: IRType::I8,
+                                    },
+                                    IRValue::ConstInt {
+                                        value: total_bytes as i64,
+                                        ty: IRType::I32,
+                                    },
+                                    IRValue::ConstInt {
+                                        value: 0,
+                                        ty: IRType::I1,
+                                    }, // is_volatile = false
+                                ],
+                            });
+
+                            // Load the initialized array
+                            let result = self.emit_value_instr(
+                                IRInstructionKind::Load {
+                                    ptr: alloc,
+                                    align: None,
+                                },
+                                result_ty.clone(),
+                            );
+
+                            return Ok(result);
+                        }
+                    }
+                }
+
+                // Fall back to insertvalue for non-zero values or small arrays
+                let mut aggregate = IRValue::Undef(result_ty.clone());
                 let mut cached_value: Option<IRValue> = None;
                 for index in 0..size {
-                    let mut value = if let Some(cached) = &cached_value {
+                    let value = if let Some(cached) = &cached_value {
                         cached.clone()
                     } else {
                         let val = self.lower_expression(element)?;
@@ -1282,9 +1540,9 @@ impl<'a> FunctionBuilder<'a> {
                         result_ty.clone(),
                     );
                 }
+                Ok(aggregate)
             }
         }
-        Ok(aggregate)
     }
 
     pub fn lower_deref_expr(&mut self, node: &DerefExprNode) -> LowerResult<IRValue> {
@@ -1373,9 +1631,32 @@ impl<'a> FunctionBuilder<'a> {
             Err(e) => return Err(e),
         };
         let call_ty = ret_ty.or(return_hint);
+
         if let Some(ty) = call_ty {
-            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
-            Ok(value)
+            if should_use_sret(&ty) {
+                // SRET handling
+                let alloca = self.emit_value_instr(
+                    IRInstructionKind::Alloca {
+                        alloc_type: ty.clone(),
+                        align: None,
+                    },
+                    IRType::Ptr(Box::new(ty.clone())),
+                );
+                args.insert(0, alloca.clone());
+                self.emit_void_instr(IRInstructionKind::Call { callee, args });
+
+                let load = self.emit_value_instr(
+                    IRInstructionKind::Load {
+                        ptr: alloca,
+                        align: None,
+                    },
+                    ty,
+                );
+                Ok(load)
+            } else {
+                let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+                Ok(value)
+            }
         } else {
             self.emit_void_instr(IRInstructionKind::Call { callee, args });
             Ok(IRValue::Undef(IRType::Void))
@@ -1456,8 +1737,30 @@ impl<'a> FunctionBuilder<'a> {
             Err(e) => return Err(e),
         };
         if let Some(ty) = res_ty {
-            let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
-            Ok(value)
+            if should_use_sret(&ty) {
+                // SRET handling for method calls
+                let alloca = self.emit_value_instr(
+                    IRInstructionKind::Alloca {
+                        alloc_type: ty.clone(),
+                        align: None,
+                    },
+                    IRType::Ptr(Box::new(ty.clone())),
+                );
+                args.insert(0, alloca.clone());
+                self.emit_void_instr(IRInstructionKind::Call { callee, args });
+
+                let load = self.emit_value_instr(
+                    IRInstructionKind::Load {
+                        ptr: alloca,
+                        align: None,
+                    },
+                    ty,
+                );
+                Ok(load)
+            } else {
+                let value = self.emit_value_instr(IRInstructionKind::Call { callee, args }, ty);
+                Ok(value)
+            }
         } else {
             self.emit_void_instr(IRInstructionKind::Call { callee, args });
             Ok(IRValue::Undef(IRType::Void))
@@ -1507,11 +1810,24 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn lower_if_expr(&mut self, node: &IfExprNode) -> LowerResult<IRValue> {
         let cond = self.lower_expression(&node.condition)?;
+
+        // Convert i8 bool to i1 for conditional branch using trunc
         let bool_cond = match cond.get_type() {
+            IRType::I8 => {
+                // Truncate i8 to i1
+                self.emit_value_instr(
+                    IRInstructionKind::Cast {
+                        op: IRCastOp::Trunc,
+                        value: cond,
+                        to_type: IRType::I1,
+                    },
+                    IRType::I1,
+                )
+            }
             IRType::I1 => cond,
             other => {
                 return Err(LowerError::TypeMismatch {
-                    expected: IRType::I1,
+                    expected: IRType::I8,
                     found: other,
                 });
             }
@@ -1594,14 +1910,28 @@ impl<'a> FunctionBuilder<'a> {
         // Condition block
         self.start_new_block(cond_label.clone());
         let cond_val = self.lower_expression(&node.condition)?;
-        if cond_val.get_type() != IRType::I1 {
-            return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
-                found: cond_val.get_type(),
-            });
-        }
+
+        // Convert i8 bool to i1 for conditional branch using trunc
+        let bool_cond = match cond_val.get_type() {
+            IRType::I8 => self.emit_value_instr(
+                IRInstructionKind::Cast {
+                    op: IRCastOp::Trunc,
+                    value: cond_val,
+                    to_type: IRType::I1,
+                },
+                IRType::I1,
+            ),
+            IRType::I1 => cond_val,
+            other => {
+                return Err(LowerError::TypeMismatch {
+                    expected: IRType::I8,
+                    found: other,
+                });
+            }
+        };
+
         self.emit_void_instr(IRInstructionKind::CondBr {
-            cond: cond_val,
+            cond: bool_cond,
             then_dest: body_label.clone(),
             else_dest: exit_label.clone(),
         });
@@ -1788,18 +2118,29 @@ impl<'a> FunctionBuilder<'a> {
         is_or: bool,
     ) -> LowerResult<IRValue> {
         let left_val = self.lower_expression(left)?;
-        if left_val.get_type() != IRType::I1 {
+        if left_val.get_type() != IRType::I8 {
             return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
+                expected: IRType::I8,
                 found: left_val.get_type(),
             });
         }
+
+        // Convert i8 to i1 for conditional branch using trunc
+        let left_i1 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::Trunc,
+                value: left_val.clone(),
+                to_type: IRType::I1,
+            },
+            IRType::I1,
+        );
+
         let rhs_label = self.fresh_label("rhs");
         let merge_label = self.fresh_label("logic_merge");
 
         let current_block_label = self.current_block.label.clone();
         self.emit_void_instr(IRInstructionKind::CondBr {
-            cond: left_val.clone(),
+            cond: left_i1,
             then_dest: if is_or {
                 merge_label.clone()
             } else {
@@ -1815,9 +2156,9 @@ impl<'a> FunctionBuilder<'a> {
         // RHS block
         self.start_new_block(rhs_label.clone());
         let right_val = self.lower_expression(right)?;
-        if right_val.get_type() != IRType::I1 {
+        if right_val.get_type() != IRType::I8 {
             return Err(LowerError::TypeMismatch {
-                expected: IRType::I1,
+                expected: IRType::I8,
                 found: right_val.get_type(),
             });
         }
@@ -1833,7 +2174,7 @@ impl<'a> FunctionBuilder<'a> {
 
         let res_ty = match self.node_value_type(node_id) {
             Ok(Some(ty)) => ty,
-            Ok(None) => IRType::I1,
+            Ok(None) => IRType::I8, // Default to I8 for bool
             Err(e) => return Err(e),
         };
         let short_const = IRValue::ConstInt {
@@ -1876,6 +2217,19 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn lower_return(&mut self, ret: &ReturnExprNode) -> LowerResult<()> {
+        if let Some(sret) = self.sret_ptr.clone() {
+            if let Some(expr) = &ret.value {
+                let value = self.lower_expression(expr)?;
+                self.emit_store(value, sret)?;
+            } else {
+                return Err(LowerError::MissingReturnValue(
+                    self.func.name.lexeme.clone(),
+                ));
+            }
+            self.emit_return(None);
+            return Ok(());
+        }
+
         if matches!(self.return_type, IRType::Void) {
             if let Some(expr) = &ret.value {
                 self.lower_expression(expr)?;
@@ -1999,6 +2353,54 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             ArrayLiteralNode::Repeated { element, .. } => {
+                // Check if we can use memset optimization for zero values
+                let use_memset = length > 16
+                    && matches!(elem_ty, IRType::I8 | IRType::I32)
+                    && Self::is_zero_value(element);
+
+                if use_memset {
+                    // Calculate total bytes
+                    let elem_size = match elem_ty {
+                        IRType::I8 => 1,
+                        IRType::I32 => 4,
+                        _ => unreachable!(),
+                    };
+                    let total_bytes = length * elem_size;
+
+                    // Cast array pointer to i8*
+                    let i8_ptr = self.emit_value_instr(
+                        IRInstructionKind::Cast {
+                            op: IRCastOp::BitCast,
+                            value: dest_ptr.clone(),
+                            to_type: IRType::Ptr(Box::new(IRType::I8)),
+                        },
+                        IRType::Ptr(Box::new(IRType::I8)),
+                    );
+
+                    // Call llvm.memset
+                    self.emit_void_instr(IRInstructionKind::Call {
+                        callee: CallTarget::Direct("llvm.memset.p0.i32".to_string()),
+                        args: vec![
+                            i8_ptr,
+                            IRValue::ConstInt {
+                                value: 0,
+                                ty: IRType::I8,
+                            },
+                            IRValue::ConstInt {
+                                value: total_bytes as i64,
+                                ty: IRType::I32,
+                            },
+                            IRValue::ConstInt {
+                                value: 0,
+                                ty: IRType::I1,
+                            },
+                        ],
+                    });
+
+                    return Ok(());
+                }
+
+                // Fall back to element-by-element store
                 let mut cached_value: Option<IRValue> = None;
                 for index in 0..length {
                     let elem_ptr = self.emit_value_instr(
@@ -2178,10 +2580,85 @@ impl<'a> FunctionBuilder<'a> {
                 "cannot store void value".to_string(),
             ));
         }
+        // Memcpy optimization for Load+Store of large aggregates
+        // Check if we're storing a value that was just loaded from another aggregate
+        if let IRValue::InstructionRef { id, ty } = &value {
+            if matches!(ty, IRType::Struct { .. } | IRType::Array { .. }) {
+                let size = Self::calculate_type_size(ty);
+                if size >= 16 {
+                    // Find if this is from a Load instruction
+                    if let Some(src_ptr) = self.find_load_source(id) {
+                        // Use memcpy instead of storing the loaded value
+                        // Note: We keep the Load instruction as it might be used elsewhere
+                        // LLVM will optimize away redundant loads if needed
+                        self.emit_memcpy(ptr, src_ptr, ty)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         self.emit_void_instr(IRInstructionKind::Store {
             value,
             ptr,
             align: None,
+        });
+        Ok(())
+    }
+
+    fn find_load_source(&self, id: &str) -> Option<IRValue> {
+        // Search backwards through instructions to find the Load that produced this value
+        for instr in self.current_block.instructions.iter().rev() {
+            if let Some(res) = &instr.result {
+                if let IRValue::InstructionRef { id: res_id, .. } = res {
+                    if res_id == id {
+                        if let IRInstructionKind::Load { ptr, .. } = &instr.kind {
+                            return Some(ptr.clone());
+                        }
+                        return None; // Found the instruction but it's not a Load
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn emit_memcpy(&mut self, dest: IRValue, src: IRValue, ty: &IRType) -> LowerResult<()> {
+        let size = Self::calculate_type_size(ty);
+
+        // Cast dest to i8*
+        let dest_i8 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::BitCast,
+                value: dest,
+                to_type: IRType::Ptr(Box::new(IRType::I8)),
+            },
+            IRType::Ptr(Box::new(IRType::I8)),
+        );
+
+        // Cast src to i8*
+        let src_i8 = self.emit_value_instr(
+            IRInstructionKind::Cast {
+                op: IRCastOp::BitCast,
+                value: src,
+                to_type: IRType::Ptr(Box::new(IRType::I8)),
+            },
+            IRType::Ptr(Box::new(IRType::I8)),
+        );
+
+        let size_val = IRValue::ConstInt {
+            value: size as i64,
+            ty: IRType::I32,
+        };
+
+        let volatile = IRValue::ConstInt {
+            value: 0,
+            ty: IRType::I1,
+        };
+
+        self.emit_void_instr(IRInstructionKind::Call {
+            callee: CallTarget::Direct("llvm.memcpy.p0.p0.i32".to_string()),
+            args: vec![dest_i8, src_i8, size_val, volatile],
         });
         Ok(())
     }

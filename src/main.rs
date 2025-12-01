@@ -3,7 +3,7 @@ mod middleend;
 
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -590,6 +590,7 @@ fn run_playground() -> i32 {
     let source_path = playground_dir.join("main.rx");
     let input_path = playground_dir.join("in");
     let output_path = playground_dir.join("out");
+    let ir_output_path = playground_dir.join("play.ll");
 
     // Read source code
     let src = match fs::read_to_string(&source_path) {
@@ -612,6 +613,13 @@ fn run_playground() -> i32 {
     };
 
     println!("Compilation successful!");
+
+    if let Err(e) = fs::write(&ir_output_path, &ir_text) {
+        eprintln!("Failed to write IR to {}: {}", ir_output_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!("IR written to {}", ir_output_path.display());
 
     // Read input file (if exists)
     let stdin_data = match fs::read(&input_path) {
@@ -709,6 +717,16 @@ fn run_ir_tests(root: Option<String>) -> i32 {
             .unwrap_or("<unnamed>")
             .to_string();
 
+        // Print progress with immediate flush
+        eprint!(
+            "Testing {}/{}: {}... ",
+            passed + failed_cases.len() + 1,
+            total,
+            name
+        );
+        let _ = std::io::stderr().flush();
+        let test_start = Instant::now();
+
         let expected_compile_exit = entry
             .get("compileexitcode")
             .and_then(|v| v.as_i64())
@@ -761,6 +779,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
         };
 
         // Compile to IR
+        eprint!("compiling...");
+        let _ = std::io::stderr().flush();
         let ir_text = match compile_source_to_ir(&src, &source_path) {
             Ok(ir) => ir,
             Err(e) => {
@@ -769,10 +789,12 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                         name.clone(),
                         format!("compilation failed (expected success): {e}"),
                     ));
+                    eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
                 } else {
                     // Expected compilation failure
                     passed += 1;
                     passed_cases.push(name);
+                    eprintln!("OK ({:.2}s)", test_start.elapsed().as_secs_f64());
                 }
                 continue;
             }
@@ -784,6 +806,7 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                 name.clone(),
                 format!("compilation succeeded but expected exit code {expected_compile_exit}"),
             ));
+            eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
             continue;
         }
 
@@ -825,6 +848,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
         };
 
         // Run the compiled IR
+        eprint!("running...");
+        let _ = std::io::stderr().flush();
         let timeout = Duration::from_secs(10);
         let result = match compile_and_run_ir(&ir_text, &stdin_data, timeout) {
             Ok(res) => res,
@@ -932,15 +957,17 @@ fn run_ir_tests(root: Option<String>) -> i32 {
                 }
             };
             failed_cases.push((name.clone(), diff));
+            eprintln!("FAILED ({:.2}s)", test_start.elapsed().as_secs_f64());
             continue;
         }
 
         // Test passed
         passed += 1;
         passed_cases.push(name);
+        eprintln!("OK ({:.2}s)", test_start.elapsed().as_secs_f64());
     }
 
-    println!("IR tests: {passed}/{total} passed");
+    println!("\nIR tests: {passed}/{total} passed");
 
     if !passed_cases.is_empty() {
         println!("Passed cases:");
@@ -1058,6 +1085,21 @@ fn main() {
         return;
     }
 
+    if flag == "--emit-ir" {
+        // Read source from stdin if no file provided, or from file if provided
+        let input_path = args.next().map(PathBuf::from);
+        let src = match read_source(input_path.as_deref().map(|p| p.to_str().unwrap())) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to read input: {e}");
+                return;
+            }
+        };
+        let code = run_emit_ir(src, input_path.as_deref());
+        if code != 0 { /* failure */ }
+        return;
+    }
+
     let pretty_flag = match flag.as_str() {
         "--ast-pretty" => true,
         "--ast-json" => false,
@@ -1120,4 +1162,75 @@ fn main() {
     if code != 0 {
         // non-zero exit code path (no process::exit to preserve Drops)
     }
+}
+
+fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
+    let start_time = Instant::now();
+
+    // Lex
+    let mut lexer = match Lexer::new(src) {
+        Ok(lx) => lx,
+        Err(e) => {
+            eprintln!("lex error: {e}");
+            return 1;
+        }
+    };
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("lex error: {e}");
+            return 1;
+        }
+    };
+
+    // Parse
+    let mut parser = Parser::new(tokens);
+    let nodes = match parser.parse() {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("parse error: {e}");
+            return 1;
+        }
+    };
+
+    // Analyze
+    let mut analyzer = Analyzer::new();
+    if let Err(e) = analyzer.analyse_program(&nodes) {
+        eprintln!("semantic error: {e}");
+        return 1;
+    }
+
+    // Lower to IR
+    let module_name = input_module_name(None, false, input_path);
+    let lower = Lower::new(&nodes, &analyzer.type_context);
+    let ir_module = match lower.lower_program(&module_name) {
+        Ok(module) => module,
+        Err(err) => {
+            eprintln!("lowering error: {err}");
+            return 1;
+        }
+    };
+    let ir_text = emit_module(&ir_module);
+
+    // Validate
+    if let Err(err) = validate_with_llvm_as(&ir_text) {
+        eprintln!("LLVM IR validation error: {err}");
+        return 1;
+    }
+
+    // Output to stdout
+    println!("{}", ir_text);
+
+    let duration = start_time.elapsed();
+
+    // Don't print timing when emitting IR, as it pollutes the IR output
+    // The `run_emit_ir` function is implicitly for emitting IR, so we always skip timing here.
+    // if !emit_ir { // `emit_ir` is not defined in this scope.
+    //     eprintln!(\"Total time: {:.3}ms\", duration.as_secs_f64() * 1000.0);
+    // }
+    // The instruction was to "Comment out the timing output when emit_ir is true".
+    // Since this function *is* the emit_ir path, we simply comment out the timing.
+    // eprintln!("Total time: {:.3}ms", duration.as_secs_f64() * 1000.0);
+
+    0
 }

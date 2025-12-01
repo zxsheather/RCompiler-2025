@@ -7,3 +7,5 @@
 /playground
 /failed_test_ir
 /failed_single_test_ir
+*.o
+docs/
