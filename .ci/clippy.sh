@@ -5,7 +5,7 @@ set -euo pipefail
 # - Default: allow general warnings (do NOT fail CI), but deny critical groups.
 # - Strict mode: set CLIPPY_STRICT=1 or pass --strict to fail on ANY warning.
 
-STRICT=${CLIPPY_STRICT:-1}
+STRICT=${CLIPPY_STRICT:-0}
 if [[ "${1:-}" == "--strict" ]]; then
   STRICT=1
 fi
