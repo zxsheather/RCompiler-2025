@@ -1,10 +1,11 @@
 use crate::frontend::{r_lexer::token::Token, r_semantic::tyctxt::NodeId};
-use serde::{Serialize, de};
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AstNode {
     Function(FunctionNode),
     Statement(StatementNode),
+    #[allow(dead_code)]
     Expression(ExpressionNode),
     Struct(StructDeclNode),
     Enum(EnumDeclNode),
@@ -218,6 +219,7 @@ pub enum ExpressionNode {
     StringLiteral(Token, NodeId),
     BoolLiteral(Token, NodeId),
     CharLiteral(Token, NodeId),
+    #[allow(dead_code)]
     Underscore(Token, NodeId),
     Block(Box<BlockNode>),
     TupleLiteral(TupleLiteralNode),

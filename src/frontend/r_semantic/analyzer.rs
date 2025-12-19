@@ -1,4 +1,4 @@
-use std::{collections::HashMap, usize};
+use std::collections::HashMap;
 
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
@@ -210,10 +210,8 @@ impl Globe {
     fn get_var_or_const_type(&self, name: &str) -> Option<RxType> {
         if let Some(var) = self.lookup_var(name) {
             Some(var.ty.clone())
-        } else if let Some(c) = self.lookup_const(name) {
-            Some(c.0.clone())
         } else {
-            None
+            self.lookup_const(name).map(|c| c.0.clone())
         }
     }
 
@@ -564,7 +562,7 @@ impl Analyzer {
                 .map(|p| matches!(p.name.token_type, TokenType::SelfLower))
                 .unwrap_or(false);
             if is_instance {
-                let self_ty = param_types.get(0).cloned().unwrap();
+                let self_ty = param_types.first().cloned().unwrap();
                 // Determine self_kind and validate matches impl type
                 let self_kind = match &self_ty {
                     RxType::Struct(s) if *s == st_name => SelfKind::Owned {
@@ -585,8 +583,7 @@ impl Analyzer {
                         other => {
                             return Err(SemanticError::Generic {
                                 msg: format!(
-                                    "self type in impl must be {} or &/&mut {}, found {}",
-                                    st_name, st_name, other
+                                    "self type in impl must be {st_name} or &/&mut {st_name}, found {other}"
                                 ),
                                 line: m.name.position.line,
                                 column: m.name.position.column,
@@ -596,8 +593,7 @@ impl Analyzer {
                     other => {
                         return Err(SemanticError::Generic {
                             msg: format!(
-                                "self type in impl must be {} or &/&mut {}, found {}",
-                                st_name, st_name, other
+                                "self type in impl must be {st_name} or &/&mut {st_name}, found {other}"
                             ),
                             line: m.name.position.line,
                             column: m.name.position.column,
@@ -806,7 +802,7 @@ impl Analyzer {
             param_types.push(ty.clone());
             self.globe.declare_var(Symbol {
                 name: param.name.lexeme.clone(),
-                ty: ty,
+                ty,
                 mutable: param.mutable,
                 token: param.name.clone(),
             })?;
@@ -856,11 +852,8 @@ impl Analyzer {
         let mut ret = RxType::Unit;
         let mut exit_flag = false;
         for stmt in blk.stats.iter() {
-            match stmt {
-                StatementNode::Const(_) => {
-                    self.analyse_statement(stmt)?;
-                }
-                _ => {}
+            if let StatementNode::Const(_) = stmt {
+                self.analyse_statement(stmt)?;
             }
         }
         for stmt in blk.stats.iter() {
@@ -881,11 +874,8 @@ impl Analyzer {
             }
         }
         for stmt in blk.stats.iter() {
-            match stmt {
-                StatementNode::Func(_) => {
-                    self.analyse_statement(stmt)?;
-                }
-                _ => {}
+            if let StatementNode::Func(_) = stmt {
+                self.analyse_statement(stmt)?;
             }
         }
         for stmt in blk.stats.iter() {
@@ -947,7 +937,7 @@ impl Analyzer {
                     RxType::Never
                 };
                 if let Some(ty) = type_annotation {
-                    let decl_ty = self.type_from_node(&ty)?;
+                    let decl_ty = self.type_from_node(ty)?;
                     match RxType::unify(&decl_ty, &expr_ty) {
                         Some(unified) => {
                             expr_ty = unified;
@@ -1013,9 +1003,9 @@ impl Analyzer {
                 value,
                 ..
             }) => {
-                let decl_ty = self.type_from_node(&type_annotation)?;
+                let decl_ty = self.type_from_node(type_annotation)?;
                 let (value_ty, const_val) = ConstFolder::calc_expr(
-                    &value,
+                    value,
                     const_token,
                     &self.globe,
                     &mut self.type_context,
@@ -1132,7 +1122,7 @@ impl Analyzer {
                 } else {
                     Err(SemanticError::InvalidUnaryOperandType {
                         expected_type: "numeric type".to_string(),
-                        found_type: format!("{}", rt),
+                        found_type: format!("{rt}"),
                         line: u.operator.position.line,
                         column: u.operator.position.column,
                     })
@@ -1142,7 +1132,7 @@ impl Analyzer {
                 if !matches!(rt, RxType::Bool) && !rt.is_integer() {
                     Err(SemanticError::InvalidUnaryOperandType {
                         expected_type: "bool or numeric type".to_string(),
-                        found_type: format!("{}", rt),
+                        found_type: format!("{rt}"),
                         line: u.operator.position.line,
                         column: u.operator.position.column,
                     })
@@ -1153,7 +1143,7 @@ impl Analyzer {
             }
             _ => Err(SemanticError::UnsupportedUnaryOperation {
                 op: format!("{}", u.operator.token_type),
-                type_: format!("{}", rt),
+                type_: format!("{rt}"),
                 line: u.operator.position.line,
                 column: u.operator.position.column,
             }),
@@ -1177,19 +1167,17 @@ impl Analyzer {
                         line,
                         column,
                     })
+                } else if let Some(unified) = RxType::unify(&lt, &rt) {
+                    self.type_context.set_type(b.node_id, unified.clone());
+                    Ok(unified)
                 } else {
-                    if let Some(unified) = RxType::unify(&lt, &rt) {
-                        self.type_context.set_type(b.node_id, unified.clone());
-                        Ok(unified)
-                    } else {
-                        Err(SemanticError::MismatchedBinaryTypes {
-                            op: op_token.as_str().to_string(),
-                            left: lt,
-                            right: rt,
-                            line,
-                            column,
-                        })
-                    }
+                    Err(SemanticError::MismatchedBinaryTypes {
+                        op: op_token.as_str().to_string(),
+                        left: lt,
+                        right: rt,
+                        line,
+                        column,
+                    })
                 }
             }
 
@@ -1217,7 +1205,7 @@ impl Analyzer {
             }
 
             EqEq | NEq => {
-                if let Some(_) = RxType::unify(&lt, &rt) {
+                if RxType::unify(&lt, &rt).is_some() {
                     self.type_context.set_type(b.node_id, RxType::Bool);
                     Ok(RxType::Bool)
                 } else {
@@ -1366,7 +1354,7 @@ impl Analyzer {
         let column = m.field.position.column;
         let RxType::Struct(name) = obj_ty else {
             return Err(SemanticError::Generic {
-                msg: format!("Member access requires struct, found {}", obj_ty),
+                msg: format!("Member access requires struct, found {obj_ty}"),
                 line,
                 column,
             });
@@ -1411,7 +1399,7 @@ impl Analyzer {
             return Ok(RxType::Unit);
         }
         if let Some(enum_map) = self.globe.enums.get(&resolved_type) {
-            if let Some(_) = enum_map.get(&sm.member.lexeme) {
+            if enum_map.get(&sm.member.lexeme).is_some() {
                 self.type_context
                     .set_type(sm.node_id, RxType::Struct(sm.type_name.lexeme.clone()));
                 return Ok(RxType::Struct(sm.type_name.lexeme.clone()));
@@ -1424,11 +1412,11 @@ impl Analyzer {
                 });
             }
         }
-        return Err(SemanticError::UnknownStruct {
+        Err(SemanticError::UnknownStruct {
             name: resolved_type,
             line: sm.type_name.position.line,
             column: sm.type_name.position.column,
-        });
+        })
     }
 
     fn analyse_deref(&mut self, d: &DerefExprNode) -> SemanticResult<RxType> {
@@ -1597,7 +1585,7 @@ impl Analyzer {
                     RxType::Array(Box::new(elem_ty.clone()), Some(length)),
                 );
                 self.type_context
-                    .set_array_layout(node_id.clone(), elem_ty.clone(), Some(length));
+                    .set_array_layout(*node_id, elem_ty.clone(), Some(length));
                 Ok(RxType::Array(Box::new(elem_ty), Some(length)))
             }
 
@@ -1619,7 +1607,7 @@ impl Analyzer {
                     RxType::Array(Box::new(elem_ty.clone()), Some(size)),
                 );
                 self.type_context
-                    .set_array_layout(node_id.clone(), elem_ty.clone(), Some(size));
+                    .set_array_layout(*node_id, elem_ty.clone(), Some(size));
                 Ok(RxType::Array(Box::new(elem_ty), Some(size)))
             }
         }
@@ -1690,8 +1678,8 @@ impl Analyzer {
                 return Err(SemanticError::StructFieldTypeMismatch {
                     name: s.name.lexeme.clone(),
                     field: field.name.lexeme.clone(),
-                    expected: expected.clone(),
-                    found,
+                    expected: Box::new(expected.clone()),
+                    found: Box::new(found),
                     line,
                     column,
                 });
@@ -1706,7 +1694,7 @@ impl Analyzer {
         let expr_ty = self.analyse_expression(&a.expr)?;
         if !expr_ty.is_integer() && !matches!(expr_ty, RxType::Char | RxType::Bool) {
             return Err(SemanticError::Generic {
-                msg: format!("Only integer, char, bool can be casted, found {}", expr_ty),
+                msg: format!("Only integer, char, bool can be casted, found {expr_ty}"),
                 line: a.as_token.position.line,
                 column: a.as_token.position.column,
             });
@@ -1714,7 +1702,7 @@ impl Analyzer {
         let target_ty = self.type_from_node(&a.type_name)?;
         if !target_ty.is_integer() {
             return Err(SemanticError::Generic {
-                msg: format!("Only integer can be casted to, found {}", target_ty),
+                msg: format!("Only integer can be casted to, found {target_ty}"),
                 line: a.as_token.position.line,
                 column: a.as_token.position.column,
             });
@@ -1829,12 +1817,8 @@ impl Analyzer {
                     ctx.expected_type = Some(vty);
                 }
             }
-        } else {
-            if ctx.allow_value {
-                if ctx.expected_type.is_none() {
-                    ctx.expected_type = Some(RxType::Unit);
-                }
-            }
+        } else if ctx.allow_value && ctx.expected_type.is_none() {
+            ctx.expected_type = Some(RxType::Unit);
         }
         Ok(RxType::Never)
     }
@@ -1894,7 +1878,7 @@ impl Analyzer {
                 let column = sig.token.position.column;
                 if sig.param_types.len() != c.args.len() {
                     return Err(SemanticError::ArgsNumMismatched {
-                        callee: format!("{}::{}", st, method_name),
+                        callee: format!("{st}::{method_name}"),
                         expected: sig.param_types.len(),
                         found: c.args.len(),
                         line,
@@ -1905,7 +1889,7 @@ impl Analyzer {
                     let at = self.analyse_expression(arg)?;
                     if RxType::unify(pt, &at).is_none() {
                         return Err(SemanticError::ArgTypeMismatched {
-                            callee: format!("{}::{}", st, method_name),
+                            callee: format!("{st}::{method_name}"),
                             index: i,
                             expected: pt.clone(),
                             found: at.clone(),
@@ -1998,7 +1982,7 @@ impl Analyzer {
                 RxType::IntLiteral => "u32".to_string(),
                 other => {
                     return Err(SemanticError::Generic {
-                        msg: format!("Method call receiver must be struct, found {}", other),
+                        msg: format!("Method call receiver must be struct, found {other}"),
                         line: mc.method.position.line,
                         column: mc.method.position.column,
                     });
@@ -2012,7 +1996,7 @@ impl Analyzer {
             RxType::IntLiteral => "u32".to_string(),
             other => {
                 return Err(SemanticError::Generic {
-                    msg: format!("Method call receiver must be struct, found {}", other),
+                    msg: format!("Method call receiver must be struct, found {other}"),
                     line: mc.method.position.line,
                     column: mc.method.position.column,
                 });
@@ -2053,7 +2037,7 @@ impl Analyzer {
                 sig
             } else {
                 return Err(SemanticError::UnknownCallee {
-                    name: format!("{}::{}", struct_name, method_name),
+                    name: format!("{struct_name}::{method_name}"),
                     line: mc.method.position.line,
                     column: mc.method.position.column,
                 });
@@ -2089,7 +2073,7 @@ impl Analyzer {
                 // require either &mut T, or mutable owned lvalue T (auto &mut). Reject immutable.
                 let base = obj_expr_ty.clone();
                 if let RxType::Ref(inner, is_mut) = &obj_expr_ty {
-                    if RxType::unify(&inner, ty).is_some() && *is_mut {
+                    if RxType::unify(inner, ty).is_some() && *is_mut {
                         (true, RxType::Ref(Box::new(ty.clone()), true))
                     } else {
                         (false, RxType::Ref(Box::new(ty.clone()), true))
@@ -2114,7 +2098,7 @@ impl Analyzer {
         };
         if !receiver_ok {
             return Err(SemanticError::ArgTypeMismatched {
-                callee: format!("{}::{}", key, method_name),
+                callee: format!("{key}::{method_name}"),
                 index: 0,
                 expected: expected_self_type,
                 found: obj_expr_ty,
@@ -2124,7 +2108,7 @@ impl Analyzer {
         }
         if sig.param_types.len() != mc.args.len() {
             return Err(SemanticError::ArgsNumMismatched {
-                callee: format!("{}.{}", struct_name, method_name),
+                callee: format!("{struct_name}.{method_name}"),
                 expected: sig.param_types.len(),
                 found: mc.args.len(),
                 line: mc.method.position.line,
@@ -2135,7 +2119,7 @@ impl Analyzer {
             let at = self.analyse_expression(arg)?;
             if RxType::unify(pt, &at).is_none() {
                 return Err(SemanticError::ArgTypeMismatched {
-                    callee: format!("{}.{}", struct_name, method_name),
+                    callee: format!("{struct_name}.{method_name}"),
                     index: i + 1,
                     expected: pt.clone(),
                     found: at.clone(),
@@ -2200,7 +2184,7 @@ impl Analyzer {
                 RxType::Tuple(rxtypes)
             }
             TypeNode::Array { elem_type, size } => {
-                let elem_ty = self.type_from_node(&elem_type)?;
+                let elem_ty = self.type_from_node(elem_type)?;
                 let len = if let Some(size_expr) = size {
                     let (_, size_val) = ConstFolder::calc_expr(
                         size_expr,
@@ -2218,7 +2202,7 @@ impl Analyzer {
                 inner_type,
                 mutable,
             } => {
-                let t = self.type_from_node(&inner_type)?;
+                let t = self.type_from_node(inner_type)?;
                 RxType::Ref(Box::new(t), *mutable)
             }
             TypeNode::SelfRef { mutable } => {
@@ -2232,9 +2216,7 @@ impl Analyzer {
             }
             TypeNode::Named(token) => {
                 let name = token.lexeme.clone();
-                if self.globe.structs.contains_key(&name) {
-                    RxType::Struct(name)
-                } else if self.globe.enums.contains_key(&name) {
+                if self.globe.structs.contains_key(&name) || self.globe.enums.contains_key(&name) {
                     RxType::Struct(name)
                 } else {
                     return Err(SemanticError::UnknownType {
@@ -2285,12 +2267,12 @@ impl Analyzer {
                 }
                 // Ensure trait self kind matches impl self kind
                 // Validate self kind compatibility
-                let ok_self = match (&trait_sig.self_kind, &impl_sig.self_kind) {
-                    (SelfKind::TraitOwned, SelfKind::Owned { .. }) => true,
-                    (SelfKind::TraitBorrowed, SelfKind::Borrowed { .. }) => true,
-                    (SelfKind::TraitBorrowedMut, SelfKind::BorrowedMut { .. }) => true,
-                    _ => false,
-                };
+                let ok_self = matches!(
+                    (&trait_sig.self_kind, &impl_sig.self_kind),
+                    (SelfKind::TraitOwned, SelfKind::Owned { .. })
+                        | (SelfKind::TraitBorrowed, SelfKind::Borrowed { .. })
+                        | (SelfKind::TraitBorrowedMut, SelfKind::BorrowedMut { .. })
+                );
                 if !ok_self {
                     return Err(SemanticError::TraitMethodSignatureMismatch {
                         trait_name: trait_name.to_string(),

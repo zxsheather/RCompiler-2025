@@ -1,9 +1,7 @@
-use std::{alloc::Layout, collections::HashMap};
-
-use serde::de;
+use std::collections::HashMap;
 
 use crate::frontend::r_semantic::{
-    analyzer::{SelfKind, Symbol},
+    analyzer::SelfKind,
     types::{RxType, RxValue},
 };
 
@@ -84,8 +82,6 @@ pub struct StaticMethodRef {
 #[derive(Debug, Clone, Default)]
 pub struct TypeContext {
     node_types: HashMap<NodeId, RxType>,
-    node_symbols: HashMap<NodeId, Symbol>,
-    node_const: HashMap<NodeId, RxValue>,
     const_items: HashMap<String, (RxType, RxValue)>,
     functions: HashMap<String, FunctionSignature>,
     methods: HashMap<(String, String), MethodSignature>,
@@ -113,14 +109,6 @@ impl TypeContext {
 
     pub fn get_type(&self, node_id: NodeId) -> Option<&RxType> {
         self.node_types.get(&node_id)
-    }
-
-    pub fn set_symbol(&mut self, node_id: NodeId, symbol: Symbol) {
-        self.node_symbols.insert(node_id, symbol);
-    }
-
-    pub fn get_symbol(&self, node_id: NodeId) -> Option<&Symbol> {
-        self.node_symbols.get(&node_id)
     }
 
     pub fn set_const_item(&mut self, name: impl Into<String>, ty: RxType, value: RxValue) {

@@ -44,11 +44,6 @@ impl IRInstruction {
         self.ty = ty;
         self
     }
-
-    pub fn with_debug(mut self, debug: DebugLocation) -> Self {
-        self.debug = Some(debug);
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,13 +119,8 @@ pub enum IRInstructionKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallTarget {
     Direct(String),
+    #[allow(dead_code)]
     Indirect(IRValue),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum IRNode {
-    Instruction(IRInstruction),
-    Value(IRValue),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,7 +157,7 @@ impl fmt::Display for IRBinaryOp {
             IRBinaryOp::LShr => "lshr",
             IRBinaryOp::AShr => "ashr",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 
@@ -191,7 +181,7 @@ impl fmt::Display for IRCastOp {
             IRCastOp::IntToPtr => "inttoptr",
             IRCastOp::BitCast => "bitcast",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 
@@ -223,7 +213,7 @@ impl fmt::Display for IRICmpOp {
             IRICmpOp::Ult => "ult",
             IRICmpOp::Ule => "ule",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 
@@ -250,12 +240,15 @@ pub enum IRValue {
         value: i64,
         ty: IRType,
     },
+    #[allow(dead_code)]
     ConstNull(IRType),
     Undef(IRType),
+    #[allow(dead_code)]
     Local {
         name: String,
         ty: IRType,
     },
+    #[allow(dead_code)]
     Global {
         name: String,
         ty: IRType,

@@ -50,7 +50,7 @@ fn render_ast_json<N: serde::Serialize>(nodes: &N) -> Result<String, String> {
 }
 
 fn render_ast_pretty<N: std::fmt::Debug>(nodes: &N) -> String {
-    format!("{:#?}", nodes)
+    format!("{nodes:#?}")
 }
 
 fn write_output(path: Option<&Path>, content: &str) -> Result<(), String> {
@@ -507,7 +507,7 @@ where
         let source_rel = entry
             .get("source")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -596,7 +596,7 @@ fn run_playground() -> i32 {
     let src = match fs::read_to_string(&source_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Failed to read {}: {}", source_path.display(), e);
+            eprintln!("Failed to read {}: {e}", source_path.display());
             return 1;
         }
     };
@@ -607,7 +607,7 @@ fn run_playground() -> i32 {
     let ir_text = match compile_source_to_ir(&src, &source_path) {
         Ok(ir) => ir,
         Err(e) => {
-            eprintln!("Compilation failed: {}", e);
+            eprintln!("Compilation failed: {e}");
             return 1;
         }
     };
@@ -615,7 +615,7 @@ fn run_playground() -> i32 {
     println!("Compilation successful!");
 
     if let Err(e) = fs::write(&ir_output_path, &ir_text) {
-        eprintln!("Failed to write IR to {}: {}", ir_output_path.display(), e);
+        eprintln!("Failed to write IR to {}: {e}", ir_output_path.display());
         std::process::exit(1);
     }
 
@@ -639,14 +639,14 @@ fn run_playground() -> i32 {
     let result = match compile_and_run_ir(&ir_text, &stdin_data, timeout) {
         Ok(res) => res,
         Err(e) => {
-            eprintln!("Execution failed: {}", e);
+            eprintln!("Execution failed: {e}");
             return 1;
         }
     };
 
     // Write output to file
     if let Err(e) = fs::write(&output_path, &result.stdout) {
-        eprintln!("Failed to write output to {}: {}", output_path.display(), e);
+        eprintln!("Failed to write output to {}: {e}", output_path.display());
         return 1;
     }
 
@@ -719,10 +719,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
 
         // Print progress with immediate flush
         eprint!(
-            "Testing {}/{}: {}... ",
-            passed + failed_cases.len() + 1,
-            total,
-            name
+            "Testing {}/{total}: {name}... ",
+            passed + failed_cases.len() + 1
         );
         let _ = std::io::stderr().flush();
         let test_start = Instant::now();
@@ -742,21 +740,21 @@ fn run_ir_tests(root: Option<String>) -> i32 {
         let source_rel = entry
             .get("source")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let input_rel = entry
             .get("input")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let output_rel = entry
             .get("output")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -864,8 +862,8 @@ fn run_ir_tests(root: Option<String>) -> i32 {
             failed_cases.push((
                 name.clone(),
                 format!(
-                    "exit code mismatch: expected {}, got {}",
-                    expected_runtime_exit, result.exit_code
+                    "exit code mismatch: expected {expected_runtime_exit}, got {}",
+                    result.exit_code
                 ),
             ));
             continue;
@@ -1165,8 +1163,6 @@ fn main() {
 }
 
 fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
-    let start_time = Instant::now();
-
     // Lex
     let mut lexer = match Lexer::new(src) {
         Ok(lx) => lx,
@@ -1219,9 +1215,7 @@ fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
     }
 
     // Output to stdout
-    println!("{}", ir_text);
-
-    let duration = start_time.elapsed();
+    println!("{ir_text}");
 
     // Don't print timing when emitting IR, as it pollutes the IR output
     // The `run_emit_ir` function is implicitly for emitting IR, so we always skip timing here.

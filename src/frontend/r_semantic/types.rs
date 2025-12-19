@@ -46,18 +46,18 @@ impl fmt::Display for RxType {
             }
             RxType::Array(t, sz) => {
                 if let Some(n) = sz {
-                    write!(f, "[{}; {}]", t, n)
+                    write!(f, "[{t}; {n}]")
                 } else {
-                    write!(f, "[{}]", t)
+                    write!(f, "[{t}]")
                 }
             }
             RxType::Struct(s) => write!(f, "{s}"),
             // RxType::Enum(e) => write!(f, "{e}"),
             RxType::Ref(inner_type, mutable) => {
                 if *mutable {
-                    write!(f, "&mut {}", inner_type)
+                    write!(f, "&mut {inner_type}")
                 } else {
-                    write!(f, "&{}", inner_type)
+                    write!(f, "&{inner_type}")
                 }
             }
             RxType::Never => write!(f, "!"),
@@ -106,21 +106,15 @@ impl RxType {
             (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b))
                 if size_a == size_b || size_b.is_none() =>
             {
-                let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
-                    return None;
-                };
+                let new_ty = RxType::unify(elem_a, elem_b)?;
                 Some(RxType::Array(Box::new(new_ty), *size_a))
             }
             (RxType::Array(elem_a, size_a), RxType::Array(elem_b, size_b)) if size_a.is_none() => {
-                let Some(new_ty) = RxType::unify(&elem_a, &elem_b) else {
-                    return None;
-                };
+                let new_ty = RxType::unify(elem_a, elem_b)?;
                 Some(RxType::Array(Box::new(new_ty), *size_b))
             }
             (RxType::Ref(inner_a, mut_a), RxType::Ref(inner_b, mut_b)) => {
-                let Some(new_ty) = RxType::unify(&inner_a, &inner_b) else {
-                    return None;
-                };
+                let new_ty = RxType::unify(inner_a, inner_b)?;
                 if !mut_a && *mut_b {
                     // &T with &mut T => &T
                     Some(RxType::Ref(Box::new(new_ty), false))
@@ -137,9 +131,7 @@ impl RxType {
             (RxType::Tuple(elems_a), RxType::Tuple(elems_b)) if elems_a.len() == elems_b.len() => {
                 let mut new_elems = Vec::new();
                 for (elem_a, elem_b) in elems_a.iter().zip(elems_b.iter()) {
-                    let Some(new_ty) = RxType::unify(elem_a, elem_b) else {
-                        return None;
-                    };
+                    let new_ty = RxType::unify(elem_a, elem_b)?;
                     new_elems.push(new_ty);
                 }
                 Some(RxType::Tuple(new_elems))
@@ -180,28 +172,11 @@ pub enum RxValue {
     Bool(bool),
     String(String),
     Char(char),
-    Str(&'static str),
+    // Str(&'static str),
     Array(RxType, usize, Vec<RxValue>),
 }
 
 impl RxValue {
-    pub fn get_type(&self) -> RxType {
-        match self {
-            RxValue::I32(_) => RxType::I32,
-            RxValue::U32(_) => RxType::U32,
-            RxValue::ISize(_) => RxType::ISize,
-            RxValue::USize(_) => RxType::USize,
-            RxValue::IntLiteral(_) => RxType::IntLiteral,
-            RxValue::Bool(_) => RxType::Bool,
-            RxValue::String(_) => RxType::String,
-            RxValue::Char(_) => RxType::Char,
-            RxValue::Str(_) => RxType::Str,
-            RxValue::Array(elem_type, size, _) => {
-                RxType::Array(Box::new(elem_type.clone()), Some(*size))
-            }
-        }
-    }
-
     pub fn as_int(&self) -> SemanticResult<i64> {
         match self {
             RxValue::I32(v) => Ok(*v as i64),
@@ -212,7 +187,7 @@ impl RxValue {
             RxValue::Char(v) => Ok(*v as i64),
             RxValue::Bool(v) => Ok(*v as i64),
             _ => Err(SemanticError::InternalError {
-                message: format!("Cannot convert {:?} to int", self),
+                message: format!("Cannot convert {self:?} to int"),
             }),
         }
     }
@@ -222,7 +197,7 @@ impl RxValue {
             RxValue::USize(v) => Ok(*v),
             RxValue::IntLiteral(v) if *v >= 0 => Ok(*v as usize),
             _ => Err(SemanticError::InternalError {
-                message: format!("Cannot convert {:?} to usize", self),
+                message: format!("Cannot convert {self:?} to usize"),
             }),
         }
     }

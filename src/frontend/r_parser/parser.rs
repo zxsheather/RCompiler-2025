@@ -1,5 +1,3 @@
-use std::usize;
-
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
     r_parser::{
@@ -358,16 +356,16 @@ impl Parser {
         }
         self.expect_type(&TokenType::RBrace)?;
         if final_expr.is_none() {
-            if let Some(last_stat) = statements.last() {
-                if let StatementNode::Expression(ExprStatementNode { expression, .. }) = last_stat {
-                    if let ExpressionNode::If(_)
+            if let Some(StatementNode::Expression(ExprStatementNode {
+                expression:
+                    expression @ (ExpressionNode::If(_)
                     | ExpressionNode::While(_)
-                    | ExpressionNode::Loop(_) = expression
-                    {
-                        final_expr = Some(expression.clone());
-                        statements.pop();
-                    }
-                }
+                    | ExpressionNode::Loop(_)),
+                ..
+            })) = statements.last()
+            {
+                final_expr = Some(expression.clone());
+                statements.pop();
             }
         }
         let node_id = self.type_context.assign_node_id();
@@ -655,7 +653,7 @@ impl Parser {
                 let member = self.expect_type(&TokenType::Identifier)?;
                 ExpressionNode::StaticMember(StaticMemberExprNode {
                     type_name: tok,
-                    member: member,
+                    member,
                     node_id: self.type_context.assign_node_id(),
                 })
             }
@@ -668,7 +666,7 @@ impl Parser {
                     let member = self.expect_type(&TokenType::Identifier)?;
                     ExpressionNode::StaticMember(StaticMemberExprNode {
                         type_name: tok,
-                        member: member,
+                        member,
                         node_id: self.type_context.assign_node_id(),
                     })
                 } else if self.check_type(&TokenType::LBrace) {
@@ -845,7 +843,7 @@ impl Parser {
             TokenType::SL | TokenType::SR => Some((100, 101)),
             TokenType::Plus | TokenType::Minus => Some((110, 111)),
             TokenType::Mul | TokenType::Div | TokenType::Percent => Some((120, 121)),
-            _ => return None,
+            _ => None,
         }
     }
 
@@ -1174,10 +1172,6 @@ impl Parser {
         self.tokens.get(self.index).expect("Index out or range")
     }
 
-    fn peek(&self) -> &Token {
-        self.tokens.get(self.index + 1).expect("Index out of range")
-    }
-
     fn peek_n_safe(&self, n: usize) -> Option<&Token> {
         self.tokens.get(self.index + n)
     }
@@ -1188,10 +1182,6 @@ impl Parser {
 
     fn advance(&mut self) {
         self.index += 1;
-    }
-
-    fn advance_n(&mut self, n: usize) {
-        self.index += n;
     }
 
     fn check_type(&mut self, token_type: &TokenType) -> bool {
