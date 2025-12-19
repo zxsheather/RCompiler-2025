@@ -1,9 +1,6 @@
 use thiserror::Error;
 
-use crate::frontend::{
-    r_lexer::{error, token::TokenType},
-    r_semantic::types::RxType,
-};
+use crate::frontend::r_semantic::types::RxType;
 
 pub type SemanticResult<T> = Result<T, SemanticError>;
 
@@ -171,11 +168,6 @@ pub enum SemanticError {
         column: usize,
     },
 
-    #[error(
-        "Left-hand side of '=' must be an identifier/array[index]/struct.field, at line {line}, column {column}"
-    )]
-    InvalidLValueType { line: usize, column: usize },
-
     #[error("{msg}, at line {line}, column {column}")]
     Generic {
         msg: String,
@@ -287,14 +279,6 @@ pub enum SemanticError {
         column: usize,
     },
 
-    #[error("Type mismatch: expected {expected}, found {found}, at line {line}, column {column}")]
-    TypeMismatch {
-        expected: RxType,
-        found: RxType,
-        line: usize,
-        column: usize,
-    },
-
     #[error("Constant '{name}' already declared at line {line}, column {column}")]
     ConstRedeclaration {
         name: String,
@@ -309,25 +293,11 @@ pub enum SemanticError {
         column: usize,
     },
 
-    #[error("Unknown constant '{name}' at line {line}, column {column}")]
-    UnknownConstant {
-        name: String,
-        line: usize,
-        column: usize,
-    },
-
     #[error("Internal error: {message}")]
     InternalError { message: String },
 
     #[error("Invalid main function signature at line {line}, column {column}")]
     MainFunctionSignatureInvalid { line: usize, column: usize },
-
-    #[error("Unknown enum '{name}' at line {line}, column {column}")]
-    UnknownEnum {
-        name: String,
-        line: usize,
-        column: usize,
-    },
 
     #[error(
         "Unknown enum variant '{variant}' for enum '{enum_name}' at line {line}, column {column}"

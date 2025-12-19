@@ -31,16 +31,6 @@ pub struct Token {
     pub position: Position,
 }
 
-impl Token {
-    pub fn new(token_type: TokenType, lexeme: String, position: Position) -> Self {
-        Self {
-            token_type,
-            lexeme,
-            position,
-        }
-    }
-}
-
 /// All possible token types in the Rust-like language
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum TokenType {
@@ -110,8 +100,6 @@ pub enum TokenType {
     // Identifiers and literals
     Identifier,
     IntegerLiteral,
-    ReservedIntegerLiteral,
-    FloatLiteral,
     CharLiteral,
     ByteLiteral,
     StringLiteral,
@@ -181,8 +169,6 @@ pub enum TokenType {
     RParen,   // )
 
     // Special tokens
-    WhiteSpace,
-    Comment,
     Eof,
     None,
 }
@@ -317,139 +303,6 @@ impl TokenType {
             TokenType::Eof => "EOF",
             _ => "",
         }
-    }
-
-    /// Check if this token type is a keyword
-    pub fn is_keyword(&self) -> bool {
-        matches!(
-            self,
-            TokenType::As
-                | TokenType::Break
-                | TokenType::Const
-                | TokenType::Continue
-                | TokenType::Crate
-                | TokenType::Else
-                | TokenType::Enum
-                | TokenType::Extern
-                | TokenType::False
-                | TokenType::Fn
-                | TokenType::For
-                | TokenType::If
-                | TokenType::Impl
-                | TokenType::In
-                | TokenType::Let
-                | TokenType::Loop
-                | TokenType::Match
-                | TokenType::Mod
-                | TokenType::Move
-                | TokenType::Mut
-                | TokenType::Pub
-                | TokenType::Ref
-                | TokenType::Return
-                | TokenType::SelfLower
-                | TokenType::SelfUpper
-                | TokenType::Static
-                | TokenType::Struct
-                | TokenType::Super
-                | TokenType::Trait
-                | TokenType::True
-                | TokenType::Type
-                | TokenType::Unsafe
-                | TokenType::Use
-                | TokenType::Where
-                | TokenType::While
-                | TokenType::Async
-                | TokenType::Await
-                | TokenType::Dyn
-                | TokenType::Abstract
-                | TokenType::Become
-                | TokenType::Box
-                | TokenType::Do
-                | TokenType::Final
-                | TokenType::Macro
-                | TokenType::Override
-                | TokenType::Priv
-                | TokenType::Typeof
-                | TokenType::Unsized
-                | TokenType::Virtual
-                | TokenType::Yield
-                | TokenType::Try
-        )
-    }
-
-    /// Check if this token type is an operator
-    pub fn is_operator(&self) -> bool {
-        matches!(
-            self,
-            TokenType::DotDotDot
-                | TokenType::DotDotEq
-                | TokenType::SLEq
-                | TokenType::SREq
-                | TokenType::LEq
-                | TokenType::EqEq
-                | TokenType::NEq
-                | TokenType::GEq
-                | TokenType::AndAnd
-                | TokenType::OrOr
-                | TokenType::SL
-                | TokenType::SR
-                | TokenType::PlusEq
-                | TokenType::MinusEq
-                | TokenType::MulEq
-                | TokenType::DivEq
-                | TokenType::ModEq
-                | TokenType::XorEq
-                | TokenType::AndEq
-                | TokenType::OrEq
-                | TokenType::DotDot
-                | TokenType::ColonColon
-                | TokenType::RArrow
-                | TokenType::LArrow
-                | TokenType::FatArrow
-                | TokenType::Eq
-                | TokenType::Lt
-                | TokenType::Gt
-                | TokenType::Not
-                | TokenType::Tilde
-                | TokenType::Plus
-                | TokenType::Minus
-                | TokenType::Mul
-                | TokenType::Div
-                | TokenType::Percent
-                | TokenType::Xor
-                | TokenType::And
-                | TokenType::Or
-                | TokenType::At
-                | TokenType::Dot
-                | TokenType::Question
-        )
-    }
-
-    /// Check if this token type is punctuation
-    pub fn is_punctuation(&self) -> bool {
-        matches!(
-            self,
-            TokenType::Comma
-                | TokenType::Semicolon
-                | TokenType::Colon
-                | TokenType::Pound
-                | TokenType::Dollar
-                | TokenType::Underscore
-                | TokenType::LBrace
-                | TokenType::RBrace
-                | TokenType::LBracket
-                | TokenType::RBracket
-                | TokenType::LParen
-                | TokenType::RParen
-        )
-    }
-
-    /// Check if this token type is a type literal
-    pub fn is_type_literal(&self) -> bool {
-        matches!(
-            self,
-            TokenType::I32 | TokenType::U32 | TokenType::ISize | TokenType::USize
-        )
     }
 }
 

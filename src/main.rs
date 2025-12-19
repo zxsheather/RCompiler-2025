@@ -1165,8 +1165,6 @@ fn main() {
 }
 
 fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
-    let start_time = Instant::now();
-
     // Lex
     let mut lexer = match Lexer::new(src) {
         Ok(lx) => lx,
@@ -1220,8 +1218,6 @@ fn run_emit_ir(src: String, input_path: Option<&Path>) -> i32 {
 
     // Output to stdout
     println!("{}", ir_text);
-
-    let duration = start_time.elapsed();
 
     // Don't print timing when emitting IR, as it pollutes the IR output
     // The `run_emit_ir` function is implicitly for emitting IR, so we always skip timing here.

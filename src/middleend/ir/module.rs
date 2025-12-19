@@ -44,11 +44,6 @@ impl IRInstruction {
         self.ty = ty;
         self
     }
-
-    pub fn with_debug(mut self, debug: DebugLocation) -> Self {
-        self.debug = Some(debug);
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,13 +119,8 @@ pub enum IRInstructionKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallTarget {
     Direct(String),
+    #[allow(dead_code)]
     Indirect(IRValue),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum IRNode {
-    Instruction(IRInstruction),
-    Value(IRValue),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,12 +240,15 @@ pub enum IRValue {
         value: i64,
         ty: IRType,
     },
+    #[allow(dead_code)]
     ConstNull(IRType),
     Undef(IRType),
+    #[allow(dead_code)]
     Local {
         name: String,
         ty: IRType,
     },
+    #[allow(dead_code)]
     Global {
         name: String,
         ty: IRType,

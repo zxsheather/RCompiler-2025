@@ -1,8 +1,6 @@
-use std::hint;
-
 use crate::{
     frontend::{
-        r_lexer::token::{self, TokenType},
+        r_lexer::token::TokenType,
         r_parser::ast::{ArrayLiteralNode, ExpressionNode, FunctionNode, ParamNode, TypeNode},
         r_semantic::{
             analyzer::SelfKind,
@@ -41,10 +39,7 @@ pub fn convert_type_node(type_ctx: &TypeContext, node: &TypeNode) -> Option<IRTy
                 Some(IRType::Void) // Unknown struct, this should not happen
             }
         }
-        TypeNode::Ref {
-            inner_type,
-            mutable,
-        } => {
+        TypeNode::Ref { inner_type, .. } => {
             let inner = convert_type_node(type_ctx, inner_type)?;
             Some(IRType::Ptr(Box::new(inner)))
         }
@@ -136,7 +131,7 @@ pub fn ir_const_from_rx(
         RxType::USize | RxType::U32 => match value {
             RxValue::USize(v) => Ok(*v as i64),
             RxValue::U32(v) => Ok(*v as i64),
-            RxValue::IntLiteral(v) => match value {
+            RxValue::IntLiteral(_) => match value {
                 RxValue::IntLiteral(v) if *v >= 0 => Ok(*v),
                 other => Err(LowerError::UnsupportedExpression(format!(
                     "unsupported const value {:?} of type {:?}",
@@ -375,18 +370,6 @@ pub fn map_binary_op(token: &TokenType) -> Option<IRBinaryOp> {
         TokenType::SR => Some(IRBinaryOp::AShr),
         _ => None,
     }
-}
-
-pub fn struct_ir_type(type_ctx: &TypeContext, name: &str) -> LowerResult<IRType> {
-    let layout = type_ctx.get_struct_layout(name).ok_or_else(|| {
-        LowerError::UnsupportedExpression(format!("unknown struct type '{}'", name))
-    })?;
-    let fields = layout
-        .fields
-        .iter()
-        .map(|field| rx_to_ir_type(type_ctx, &field.ty))
-        .collect();
-    Ok(IRType::Struct { fields })
 }
 
 pub fn determine_cast_op(from: &IRType, to: &IRType) -> LowerResult<Option<IRCastOp>> {

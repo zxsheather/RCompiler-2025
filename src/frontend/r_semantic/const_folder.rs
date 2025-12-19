@@ -1,11 +1,6 @@
-use std::collections::HashMap;
-
 use crate::frontend::{
     r_lexer::token::{Token, TokenType},
-    r_parser::ast::{
-        ArrayLiteralNode, AsExprNode, BinaryExprNode, ConstItemNode, ExpressionNode, TypeNode,
-        UnaryExprNode,
-    },
+    r_parser::ast::{ArrayLiteralNode, BinaryExprNode, ExpressionNode, TypeNode, UnaryExprNode},
     r_semantic::{
         analyzer::Globe,
         error::{SemanticError, SemanticResult},

@@ -2,15 +2,10 @@ use std::collections::HashSet;
 
 use crate::middleend::ir::lower::ENTRY_BLOCK_LABEL;
 use crate::middleend::ir::module::{
-    CallTarget, IRBinaryOp, IRCastOp, IRFunction, IRInstruction, IRInstructionKind, IRModule,
-    IRValue,
+    CallTarget, IRBinaryOp, IRCastOp, IRFunction, IRInstruction, IRInstructionKind, IRValue,
 };
 use crate::{
-    frontend::r_semantic::{
-        built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
-        tyctxt::TypeContext,
-        types::RxType,
-    },
+    frontend::r_semantic::{built_in::get_built_in_funcs, tyctxt::TypeContext},
     middleend::ir::{
         module::{IRBasicBlock, IRICmpOp, IRType},
         utils::{mangle_symbol_name, rx_to_ir_type},

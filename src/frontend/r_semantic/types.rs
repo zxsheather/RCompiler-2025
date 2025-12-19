@@ -180,28 +180,11 @@ pub enum RxValue {
     Bool(bool),
     String(String),
     Char(char),
-    Str(&'static str),
+    // Str(&'static str),
     Array(RxType, usize, Vec<RxValue>),
 }
 
 impl RxValue {
-    pub fn get_type(&self) -> RxType {
-        match self {
-            RxValue::I32(_) => RxType::I32,
-            RxValue::U32(_) => RxType::U32,
-            RxValue::ISize(_) => RxType::ISize,
-            RxValue::USize(_) => RxType::USize,
-            RxValue::IntLiteral(_) => RxType::IntLiteral,
-            RxValue::Bool(_) => RxType::Bool,
-            RxValue::String(_) => RxType::String,
-            RxValue::Char(_) => RxType::Char,
-            RxValue::Str(_) => RxType::Str,
-            RxValue::Array(elem_type, size, _) => {
-                RxType::Array(Box::new(elem_type.clone()), Some(*size))
-            }
-        }
-    }
-
     pub fn as_int(&self) -> SemanticResult<i64> {
         match self {
             RxValue::I32(v) => Ok(*v as i64),

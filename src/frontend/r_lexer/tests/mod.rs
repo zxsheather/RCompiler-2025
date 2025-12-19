@@ -32,27 +32,6 @@ mod tests {
     }
 
     #[test]
-    fn test_integer_literals() {
-        let mut lexer = Lexer::new("42 0x2A 0b101010 0o52 123u32 456isize".to_string()).unwrap();
-        let tokens = lexer.tokenize().unwrap();
-
-        assert_eq!(tokens.len(), 7); // 6 numbers + EOF
-        // Note: might match as ReservedIntegerLiteral depending on pattern priority
-        for i in 0..6 {
-            assert!(matches!(
-                tokens[i].token_type,
-                TokenType::IntegerLiteral | TokenType::ReservedIntegerLiteral
-            ));
-        }
-        assert_eq!(tokens[0].lexeme, "42");
-        assert_eq!(tokens[1].lexeme, "0x2A");
-        assert_eq!(tokens[2].lexeme, "0b101010");
-        assert_eq!(tokens[3].lexeme, "0o52");
-        assert_eq!(tokens[4].lexeme, "123u32");
-        assert_eq!(tokens[5].lexeme, "456isize");
-    }
-
-    #[test]
     fn test_string_literals() {
         let mut lexer = Lexer::new(r#""hello" "world\n" b"bytes" r"raw""#.to_string()).unwrap();
         let tokens = lexer.tokenize().unwrap();

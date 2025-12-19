@@ -185,11 +185,6 @@ fn terminate_process(pid: u32) {
     }
 }
 
-#[cfg(not_unix)]
-fn terminate_process(_pid: u32) {
-    // On non-Unix systems, process termination is not implemented.
-}
-
 impl LLVMEmitter {
     pub fn new() -> Self {
         Self {

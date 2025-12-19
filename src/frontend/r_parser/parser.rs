@@ -1174,10 +1174,6 @@ impl Parser {
         self.tokens.get(self.index).expect("Index out or range")
     }
 
-    fn peek(&self) -> &Token {
-        self.tokens.get(self.index + 1).expect("Index out of range")
-    }
-
     fn peek_n_safe(&self, n: usize) -> Option<&Token> {
         self.tokens.get(self.index + n)
     }
@@ -1188,10 +1184,6 @@ impl Parser {
 
     fn advance(&mut self) {
         self.index += 1;
-    }
-
-    fn advance_n(&mut self, n: usize) {
-        self.index += n;
     }
 
     fn check_type(&mut self, token_type: &TokenType) -> bool {

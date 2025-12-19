@@ -13,7 +13,7 @@ use crate::{
         r_semantic::{
             analyzer::SelfKind,
             built_in::{get_built_in_funcs, get_built_in_methods, get_built_in_static_methods},
-            tyctxt::{self, NodeId, TypeContext},
+            tyctxt::{NodeId, TypeContext},
             types::RxType,
         },
     },
@@ -22,14 +22,14 @@ use crate::{
         error::{LowerError, LowerResult},
         module::{
             CallTarget, IRBasicBlock, IRBinaryOp, IRCastOp, IRFunction, IRICmpOp, IRInstruction,
-            IRInstructionKind, IRModule, IRNode, IRType, IRValue,
+            IRInstructionKind, IRModule, IRType, IRValue,
         },
         utils::{
             array_length_from_type, const_i32, convert_type_node, derive_param_ir_type,
             determine_cast_op, determine_return_type, expression_node_id, func_sig_hints,
             ir_const_from_rx, ir_type_hint_from_rx, is_unsigned_integer_type, mangle_symbol_name,
             map_binary_op, map_compare_op, map_compound_binary_op, resolve_method_self_type,
-            rx_to_ir_type, struct_ir_type,
+            rx_to_ir_type,
         },
     },
 };
@@ -552,27 +552,12 @@ impl<'a> FunctionBuilder<'a> {
             param_mutability.insert(param.name.lexeme.clone(), param.mutable);
             params.push((param.name.lexeme.clone(), ty));
         }
-        let mut sret_ptr = None;
         let mut return_type = determine_return_type(type_ctx, func, return_hint);
 
         if should_use_sret(&return_type) {
             let sret_arg_name = "__sret_ptr".to_string();
             let sret_ty = IRType::Ptr(Box::new(return_type.clone()));
             params.insert(0, (sret_arg_name.clone(), sret_ty.clone()));
-
-            // We need to bind this argument later, but for now we just need to know it exists
-            // Actually, we can create the IRValue for it here or just remember to use argument 0
-            // The `lower_function_body` iterates over `params`, so it will see this new param.
-            // We just need to identify which one is the sret pointer.
-
-            // Wait, `lower_function_body` iterates `self.params`. So if we insert into `params` here,
-            // it will be treated as a normal argument.
-            // We need to capture the IRValue corresponding to this argument.
-            // Since `lower_function_body` creates the IRValues, we can't capture it here easily unless we pre-create it.
-            // But `lower_function_body` does the binding.
-
-            // Let's change `return_type` to Void for the function signature.
-            // But keep the original return type for logic? No, the function signature should be Void.
             return_type = IRType::Void;
         }
 
@@ -593,7 +578,7 @@ impl<'a> FunctionBuilder<'a> {
             loop_stack: Vec::new(),
             param_mutability,
             entry_allocas: Vec::new(),
-            sret_ptr,
+            sret_ptr: None,
         })
     }
 
@@ -1346,11 +1331,6 @@ impl<'a> FunctionBuilder<'a> {
             ExpressionNode::BoolLiteral(token, _) => token.lexeme == "false",
             _ => false,
         }
-    }
-
-    // Helper function to calculate struct size in bytes
-    fn calculate_struct_size(ty: &IRType) -> usize {
-        Self::type_layout(ty).0
     }
 
     fn calculate_type_size(ty: &IRType) -> usize {
