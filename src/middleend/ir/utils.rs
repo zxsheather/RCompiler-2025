@@ -106,15 +106,13 @@ pub fn ir_const_from_rx(
         RxType::Bool => match value {
             RxValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
             other => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported const value {:?} of type {:?}",
-                other, ty
+                "unsupported const value {other:?} of type {ty:?}"
             ))),
         },
         RxType::Char => match value {
             RxValue::Char(c) => Ok(*c as i64),
             other => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported const value {:?} of type {:?}",
-                other, ty
+                "unsupported const value {other:?} of type {ty:?}"
             ))),
         },
         RxType::I32 | RxType::IntLiteral | RxType::MainReturn | RxType::ISize => match value {
@@ -124,8 +122,7 @@ pub fn ir_const_from_rx(
             RxValue::USize(v) => Ok(*v as i64),
             RxValue::IntLiteral(v) => Ok(*v),
             other => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported const value {:?} of type {:?}",
-                other, ty
+                "unsupported const value {other:?} of type {ty:?}"
             ))),
         },
         RxType::USize | RxType::U32 => match value {
@@ -134,18 +131,15 @@ pub fn ir_const_from_rx(
             RxValue::IntLiteral(_) => match value {
                 RxValue::IntLiteral(v) if *v >= 0 => Ok(*v),
                 other => Err(LowerError::UnsupportedExpression(format!(
-                    "unsupported const value {:?} of type {:?}",
-                    other, ty
+                    "unsupported const value {other:?} of type {ty:?}"
                 ))),
             },
             other => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported const value {:?} of type {:?}",
-                other, ty
+                "unsupported const value {other:?} of type {ty:?}"
             ))),
         },
         other_ty => Err(LowerError::UnsupportedExpression(format!(
-            "unsupported const type {:?}",
-            other_ty
+            "unsupported const type {other_ty:?}"
         ))),
     }?;
     Ok(IRValue::ConstInt {
@@ -168,10 +162,10 @@ pub fn ir_type_for_str() -> IRType {
 
 pub fn ir_type_for_array(
     type_ctx: &TypeContext,
-    elem_type: &Box<TypeNode>,
+    elem_type: &TypeNode,
     size: &Option<Box<ExpressionNode>>,
 ) -> Option<IRType> {
-    let mut elem = convert_type_node(type_ctx, &elem_type)?;
+    let mut elem = convert_type_node(type_ctx, elem_type)?;
     if matches!(elem, IRType::Void) {
         elem = IRType::I8; // use i8 for void element type
     }
@@ -205,7 +199,7 @@ pub fn array_length_from_expr(type_ctx: &TypeContext, expr: &ExpressionNode) -> 
         }
         ExpressionNode::Identifier(token, _) => type_ctx
             .get_const_value(&token.lexeme)
-            .and_then(|(_, value)| rx_val_to_usize(&value)),
+            .and_then(|(_, value)| rx_val_to_usize(value)),
         _ => None,
     }
 }
@@ -392,8 +386,7 @@ pub fn determine_cast_op(from: &IRType, to: &IRType) -> LowerResult<Option<IRCas
                 }
             } else {
                 Err(LowerError::UnsupportedCast(format!(
-                    "cannot cast from {:?} to {:?}",
-                    from, to
+                    "cannot cast from {from:?} to {to:?}"
                 )))
             }
         }

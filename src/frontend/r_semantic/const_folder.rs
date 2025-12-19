@@ -55,7 +55,7 @@ impl ConstFolder {
                     let mut vals = Vec::new();
                     let mut elem_type = RxType::Never;
                     for elem in elements {
-                        let (ty, val) = Self::calc_expr(&elem, report_tok, globe, type_context)?;
+                        let (ty, val) = Self::calc_expr(elem, report_tok, globe, type_context)?;
                         if let Some(unified_ty) = RxType::unify(&elem_type, &ty) {
                             elem_type = unified_ty;
                             vals.push(val);
@@ -77,9 +77,9 @@ impl ConstFolder {
                     node_id,
                 } => {
                     let (elem_ty, elem_val) =
-                        Self::calc_expr(&element, report_tok, globe, type_context)?;
+                        Self::calc_expr(element, report_tok, globe, type_context)?;
                     let (size_ty, size_val) =
-                        Self::calc_expr(&size, report_tok, globe, type_context)?;
+                        Self::calc_expr(size, report_tok, globe, type_context)?;
                     if RxType::unify(&size_ty, &RxType::USize).is_some() {
                         let size_usize = size_val.as_usize()?;
                         let vals = vec![elem_val; size_usize];
@@ -224,20 +224,15 @@ impl ConstFolder {
                         type_context.set_type(as_node.node_id, RxType::USize);
                         Ok((RxType::USize, RxValue::USize(val as usize)))
                     }
-                    _ => {
-                        return Err(SemanticError::InvalidConstExpr {
-                            expr: format!(
-                                "unsupported as-cast from {:?} to {:?}",
-                                expr_ty, target_ty
-                            ),
-                            line: report_tok.position.line,
-                            column: report_tok.position.column,
-                        });
-                    }
+                    _ => Err(SemanticError::InvalidConstExpr {
+                        expr: format!("unsupported as-cast from {expr_ty:?} to {target_ty:?}"),
+                        line: report_tok.position.line,
+                        column: report_tok.position.column,
+                    }),
                 }
             }
             other => Err(SemanticError::InvalidConstExpr {
-                expr: format!("{:?}", other),
+                expr: format!("{other:?}"),
                 line: report_tok.position.line,
                 column: report_tok.position.column,
             }),
@@ -262,12 +257,12 @@ impl ConstFolder {
             RxType::IntLiteral
         };
 
-        let (base, digits) = if clean.starts_with("0x") {
-            (16, &clean[2..])
-        } else if clean.starts_with("0b") {
-            (2, &clean[2..])
-        } else if clean.starts_with("0o") {
-            (8, &clean[2..])
+        let (base, digits) = if let Some(stripped) = clean.strip_prefix("0x") {
+            (16, stripped)
+        } else if let Some(stripped) = clean.strip_prefix("0b") {
+            (2, stripped)
+        } else if let Some(stripped) = clean.strip_prefix("0o") {
+            (8, stripped)
         } else {
             (10, clean.as_str())
         };
@@ -416,7 +411,7 @@ impl ConstFolder {
                     return Ok((RxType::Bool, RxValue::Bool(lb || rb)));
                 }
             }
-            (lt, rt, op) if matches!(op, AndAnd | OrOr) => {
+            (lt, rt, AndAnd | OrOr) => {
                 return Err(SemanticError::InvalidLogicalTypes {
                     left: lt,
                     right: rt,
@@ -506,7 +501,7 @@ impl ConstFolder {
             TypeNode::Unit => RxType::Unit,
             _ => {
                 return Err(SemanticError::InvalidConstExpr {
-                    expr: format!("unsupported type annotation for const: {:?}", t),
+                    expr: format!("unsupported type annotation for const: {t:?}"),
                     line: report_tok.position.line,
                     column: report_tok.position.column,
                 });

@@ -12,7 +12,7 @@ struct TokenRule {
 impl TokenRule {
     pub fn new(token_type: TokenType, pattern: &str) -> LexResult<Self> {
         let regex = Regex::new(pattern).map_err(|_| LexError::Generic {
-            message: format!("Invalid regex pattern"),
+            message: "Invalid regex pattern".to_string(),
             line: 0,
             column: 0,
         })?;
@@ -200,7 +200,7 @@ impl Lexer {
 
     fn add_rule(&mut self, token_type: TokenType, pattern: &str) -> LexResult<()> {
         let anchored_pattern = if !pattern.starts_with('^') {
-            format!("^{}", pattern)
+            format!("^{pattern}")
         } else {
             pattern.to_string()
         };
@@ -221,7 +221,7 @@ impl Lexer {
         tokens.push(Token {
             token_type: TokenType::Eof,
             lexeme: String::new(),
-            position: self.pos.clone(),
+            position: self.pos,
         });
 
         Ok(tokens)
@@ -360,7 +360,7 @@ impl Lexer {
         }
 
         if let Some((token_type, lexeme)) = matched {
-            let position = self.pos.clone();
+            let position = self.pos;
             self.advance_by_str(&lexeme);
             match_token = Some(Token {
                 token_type,

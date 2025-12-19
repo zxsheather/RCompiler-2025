@@ -27,7 +27,7 @@ fn maybe_dump_json(nodes: &[AstNode]) {
         let name = sanitize_filename(&current_test_name());
         let mut path = PathBuf::from(dir);
         let _ = fs::create_dir_all(&path);
-        path.push(format!("{}.json", name));
+        path.push(format!("{name}.json"));
         if let Ok(s) = serde_json::to_string_pretty(nodes) {
             let _ = fs::write(path, s);
         }
@@ -50,7 +50,7 @@ fn parse_expr(input: &str) -> ExpressionNode {
         AstNode::Statement(StatementNode::Expression(ExprStatementNode { expression, .. })) => {
             expression
         }
-        other => panic!("expected expression, got {:?}", other),
+        other => panic!("expected expression, got {other:?}"),
     }
 }
 
@@ -203,7 +203,7 @@ fn array_type_parsing_in_fn_param() {
                         TypeNode::I32(_) => {}
                         _ => panic!("elem type should be i32"),
                     }
-                    assert!(matches!(size, Some(_)));
+                    assert!(size.is_some());
                 }
                 _ => panic!("expected array type"),
             }
@@ -291,7 +291,7 @@ fn assignment_right_associative_in_expr() {
                 _ => panic!("assign RHS should be an assignment expression"),
             }
         }
-        other => panic!("expected assignment statement, got {:?}", other),
+        other => panic!("expected assignment statement, got {other:?}"),
     }
 }
 
@@ -318,7 +318,7 @@ fn assignment_has_lowest_precedence() {
             }
             _ => panic!("RHS should be binary +"),
         },
-        other => panic!("expected assignment statement, got {:?}", other),
+        other => panic!("expected assignment statement, got {other:?}"),
     }
 }
 
@@ -340,9 +340,8 @@ fn tuple_literal_and_type_parsing() {
     }
 
     let expr = parse_expr("(1)");
-    match expr {
-        ExpressionNode::TupleLiteral(_) => panic!("expected not a tuple literal"),
-        _ => {}
+    if let ExpressionNode::TupleLiteral(_) = expr {
+        panic!("expected not a tuple literal");
     }
     // Tuple type in fn signature
     let nodes = parse_nodes("fn f(t: (i32, bool)) { }; ");
@@ -395,7 +394,7 @@ fn impl_block_and_method_call_parse() {
                 _ => panic!("self param should be named type Point"),
             }
         }
-        other => panic!("expected impl block, got {:?}", other),
+        other => panic!("expected impl block, got {other:?}"),
     }
 }
 
@@ -428,7 +427,7 @@ fn ref_expr_parse() {
     let expr = parse_expr("&x");
     match expr {
         ExpressionNode::Ref(r) => {
-            assert_eq!(r.mutable, false);
+            assert!(!r.mutable);
             assert!(matches!(*r.operand, ExpressionNode::Identifier(..)));
         }
         _ => panic!("expected ref expr"),
@@ -438,7 +437,7 @@ fn ref_expr_parse() {
     let expr2 = parse_expr("&mut x");
     match expr2 {
         ExpressionNode::Ref(r) => {
-            assert_eq!(r.mutable, true);
+            assert!(r.mutable);
             assert!(matches!(*r.operand, ExpressionNode::Identifier(..)));
         }
         _ => panic!("expected ref expr &mut"),
@@ -474,7 +473,7 @@ fn ref_type_parse_in_fn_params() {
                     inner_type,
                     mutable,
                 } => {
-                    assert_eq!(*mutable, false);
+                    assert!(!*mutable);
                     assert!(matches!(**inner_type, TypeNode::I32(_)));
                 }
                 _ => panic!("expected &i32"),
@@ -484,7 +483,7 @@ fn ref_type_parse_in_fn_params() {
                     inner_type,
                     mutable,
                 } => {
-                    assert_eq!(*mutable, true);
+                    assert!(*mutable);
                     match **inner_type {
                         TypeNode::Named(ref t) => assert_eq!(t.lexeme, "Point"),
                         _ => panic!("inner should be named Point"),

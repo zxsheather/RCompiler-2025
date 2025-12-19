@@ -157,7 +157,7 @@ impl fmt::Display for IRBinaryOp {
             IRBinaryOp::LShr => "lshr",
             IRBinaryOp::AShr => "ashr",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 
@@ -181,7 +181,7 @@ impl fmt::Display for IRCastOp {
             IRCastOp::IntToPtr => "inttoptr",
             IRCastOp::BitCast => "bitcast",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 
@@ -213,7 +213,7 @@ impl fmt::Display for IRICmpOp {
             IRICmpOp::Ult => "ult",
             IRICmpOp::Ule => "ule",
         };
-        write!(f, "{}", op_str)
+        write!(f, "{op_str}")
     }
 }
 

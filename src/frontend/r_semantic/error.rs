@@ -213,8 +213,8 @@ pub enum SemanticError {
     StructFieldTypeMismatch {
         name: String,
         field: String,
-        expected: RxType,
-        found: RxType,
+        expected: Box<RxType>,
+        found: Box<RxType>,
         line: usize,
         column: usize,
     },

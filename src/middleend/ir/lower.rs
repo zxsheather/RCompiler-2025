@@ -142,11 +142,10 @@ impl<'a> Lower<'a> {
                                 | SelfKind::None => RxType::Struct(type_name.clone()),
                             };
                             let self_rx = match &sig.self_kind {
-                                SelfKind::Borrowed { .. } | SelfKind::TraitBorrowed { .. } => {
+                                SelfKind::Borrowed { .. } | SelfKind::TraitBorrowed => {
                                     RxType::Ref(Box::new(base_ty.clone()), false)
                                 }
-                                SelfKind::BorrowedMut { .. }
-                                | SelfKind::TraitBorrowedMut { .. } => {
+                                SelfKind::BorrowedMut { .. } | SelfKind::TraitBorrowedMut => {
                                     RxType::Ref(Box::new(base_ty.clone()), true)
                                 }
                                 _ => base_ty,
@@ -231,7 +230,7 @@ impl<'a> Lower<'a> {
         }
 
         for (type_name, method_name, _) in get_built_in_methods() {
-            let raw_name = format!("{}::{}", type_name, method_name);
+            let raw_name = format!("{type_name}::{method_name}");
             let ir_name = mangle_symbol_name(&raw_name);
             if defined_symbols.contains(&ir_name) || synthesized.contains(&ir_name) {
                 continue;
@@ -254,7 +253,7 @@ impl<'a> Lower<'a> {
                 };
                 params.push(("self".to_string(), rx_to_ir_type(self.type_ctx, &self_rx)));
                 for (idx, rx) in sig.params().iter().enumerate() {
-                    params.push((format!("arg{}", idx), rx_to_ir_type(self.type_ctx, rx)));
+                    params.push((format!("arg{idx}"), rx_to_ir_type(self.type_ctx, rx)));
                 }
 
                 let return_type = rx_to_ir_type(self.type_ctx, sig.return_type());
@@ -268,7 +267,7 @@ impl<'a> Lower<'a> {
         }
 
         for (type_name, method_name, _) in get_built_in_static_methods() {
-            let raw_name = format!("{}::{}", type_name, method_name);
+            let raw_name = format!("{type_name}::{method_name}");
             let ir_name = mangle_symbol_name(&raw_name);
             if defined_symbols.contains(&ir_name) || synthesized.contains(&ir_name) {
                 continue;
@@ -664,7 +663,7 @@ impl<'a> FunctionBuilder<'a> {
                 let mut combined_instructions =
                     Vec::with_capacity(self.entry_allocas.len() + entry_block.instructions.len());
                 combined_instructions.extend(self.entry_allocas);
-                combined_instructions.extend(entry_block.instructions.drain(..));
+                combined_instructions.append(&mut entry_block.instructions);
                 entry_block.instructions = combined_instructions;
             }
         }
@@ -767,10 +766,7 @@ impl<'a> FunctionBuilder<'a> {
 
         let var_name = node.identifier.lexeme.clone();
         let expr_type = if let Some(expr) = &node.value {
-            match self.expression_value_type(expr) {
-                Ok(opt) => opt,
-                Err(e) => return Err(e),
-            }
+            self.expression_value_type(expr)?
         } else {
             None
         };
@@ -782,7 +778,7 @@ impl<'a> FunctionBuilder<'a> {
         let ctx_type = self
             .type_ctx
             .get_type(node.node_id)
-            .map(|ty| rx_to_ir_type(self.type_ctx, &ty));
+            .map(|ty| rx_to_ir_type(self.type_ctx, ty));
         let value_type = if let Some(expr_ty) = expr_type {
             expr_ty
         } else if let Some(annot_ty) = annotated_type {
@@ -803,17 +799,15 @@ impl<'a> FunctionBuilder<'a> {
         );
 
         // Memcpy optimization: detect identifier-to-identifier assignment of large aggregates
-        if let Some(expr) = &node.value {
-            if let ExpressionNode::Identifier(src_token, _) = expr {
-                if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
-                    if matches!(value_type, IRType::Struct { .. } | IRType::Array { .. }) {
-                        let size = Self::calculate_type_size(&value_type);
-                        if size >= 16 {
-                            // Use memcpy for large aggregates
-                            self.emit_memcpy(alloca.clone(), src_ptr, &value_type)?;
-                            self.bind_value(var_name, Binding::Pointer(alloca));
-                            return Ok(());
-                        }
+        if let Some(ExpressionNode::Identifier(src_token, _)) = &node.value {
+            if let Some(Binding::Pointer(src_ptr)) = self.lookup_binding(&src_token.lexeme) {
+                if matches!(value_type, IRType::Struct { .. } | IRType::Array { .. }) {
+                    let size = Self::calculate_type_size(&value_type);
+                    if size >= 16 {
+                        // Use memcpy for large aggregates
+                        self.emit_memcpy(alloca.clone(), src_ptr, &value_type)?;
+                        self.bind_value(var_name, Binding::Pointer(alloca));
+                        return Ok(());
                     }
                 }
             }
@@ -906,8 +900,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             ExpressionNode::As(node) => self.lower_as_expr(node),
             _ => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported expression: {:?}",
-                expr
+                "unsupported expression: {expr:?}"
             ))),
         }
     }
@@ -935,12 +928,12 @@ impl<'a> FunctionBuilder<'a> {
                 break;
             }
         }
-        let (base, digits) = if lexeme.starts_with("0x") {
-            (16, &lexeme[2..])
-        } else if lexeme.starts_with("0b") {
-            (2, &lexeme[2..])
-        } else if lexeme.starts_with("0o") {
-            (8, &lexeme[2..])
+        let (base, digits) = if let Some(stripped) = lexeme.strip_prefix("0x") {
+            (16, stripped)
+        } else if let Some(stripped) = lexeme.strip_prefix("0b") {
+            (2, stripped)
+        } else if let Some(stripped) = lexeme.strip_prefix("0o") {
+            (8, stripped)
         } else {
             (10, &lexeme[..])
         };
@@ -1149,13 +1142,11 @@ impl<'a> FunctionBuilder<'a> {
                     Ok(value)
                 }
                 other => Err(LowerError::UnsupportedExpression(format!(
-                    "cannot apply 'not' operator to type {:?}",
-                    other
+                    "cannot apply 'not' operator to type {other:?}"
                 ))),
             },
             other => Err(LowerError::UnsupportedExpression(format!(
-                "unsupported unary operator: {:?}",
-                other
+                "unsupported unary operator: {other:?}"
             ))),
         }
     }
@@ -1224,8 +1215,7 @@ impl<'a> FunctionBuilder<'a> {
                 IRType::Ptr(inner) => inner.as_ref().clone(),
                 other => {
                     return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot load from non-pointer binding {:?}",
-                        other
+                        "cannot load from non-pointer binding {other:?}"
                     )));
                 }
             };
@@ -1369,7 +1359,7 @@ impl<'a> FunctionBuilder<'a> {
         if align <= 1 {
             return value;
         }
-        ((value + align - 1) / align) * align
+        value.div_ceil(align) * align
     }
 
     fn lower_array_literal_expr(&mut self, literal: &ArrayLiteralNode) -> LowerResult<IRValue> {
@@ -1390,8 +1380,7 @@ impl<'a> FunctionBuilder<'a> {
             IRType::Array { elem_type, size } => (elem_type.as_ref().clone(), *size),
             other => {
                 return Err(LowerError::UnsupportedExpression(format!(
-                    "expected array type for array literal, found {:?}",
-                    other
+                    "expected array type for array literal, found {other:?}"
                 )));
             }
         };
@@ -1572,8 +1561,7 @@ impl<'a> FunctionBuilder<'a> {
             ExpressionNode::StaticMember(sm) => {
                 let Some(meta) = self.type_ctx.get_static_method_ref(sm.node_id) else {
                     return Err(LowerError::UnsupportedExpression(format!(
-                        "unsolved static method {:?}",
-                        sm,
+                        "unsolved static method {sm:?}",
                     )));
                 };
                 let sig = self
@@ -1588,8 +1576,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             other => {
                 return Err(LowerError::UnsupportedExpression(format!(
-                    "unsupported callee expression: {:?}",
-                    other
+                    "unsupported callee expression: {other:?}"
                 )));
             }
         };
@@ -1606,10 +1593,7 @@ impl<'a> FunctionBuilder<'a> {
         for arg in &call.args {
             args.push(self.lower_expression(arg)?);
         }
-        let ret_ty = match self.node_value_type(call.node_id) {
-            Ok(ty) => ty,
-            Err(e) => return Err(e),
-        };
+        let ret_ty = self.node_value_type(call.node_id)?;
         let call_ty = ret_ty.or(return_hint);
 
         if let Some(ty) = call_ty {
@@ -1651,12 +1635,11 @@ impl<'a> FunctionBuilder<'a> {
             .type_ctx
             .get_type(object_id)
             .cloned()
-            .ok_or_else(|| LowerError::MissingType(object_id))?;
+            .ok_or(LowerError::MissingType(object_id))?;
         let type_name = obj_rx.method_key();
         if type_name.is_empty() {
             return Err(LowerError::UnsupportedExpression(format!(
-                "type {:?} has no methods",
-                obj_rx
+                "type {obj_rx:?} has no methods"
             )));
         }
 
@@ -1666,8 +1649,7 @@ impl<'a> FunctionBuilder<'a> {
             .get_method(&type_name, &method_name)
             .ok_or_else(|| {
                 LowerError::UnsupportedExpression(format!(
-                    "type {} has no method named {}",
-                    type_name, method_name
+                    "type {type_name} has no method named {method_name}"
                 ))
             })?;
 
@@ -1709,7 +1691,7 @@ impl<'a> FunctionBuilder<'a> {
             args.push(arg_val);
         }
 
-        let callee_symbol = mangle_symbol_name(&format!("{}::{}", type_name, method_name));
+        let callee_symbol = mangle_symbol_name(&format!("{type_name}::{method_name}"));
         let callee = CallTarget::Direct(callee_symbol);
         let res_ty = match self.node_value_type(call.node_id) {
             Ok(Some(ty)) => Some(ty),
@@ -1846,7 +1828,7 @@ impl<'a> FunctionBuilder<'a> {
             self.start_new_block(else_label.clone());
             let else_value = match else_block {
                 ElseBodyNode::Block(block) => self.lower_block(block)?,
-                ElseBodyNode::If(if_expr) => Some(self.lower_if_expr(&if_expr)?),
+                ElseBodyNode::If(if_expr) => Some(self.lower_if_expr(if_expr)?),
             };
             let else_exit_label = self.current_block.label.clone();
             if !self.has_terminated() {
@@ -2071,20 +2053,18 @@ impl<'a> FunctionBuilder<'a> {
             Some(ty) => {
                 if matches!(ty, IRType::Void) {
                     IRValue::Undef(IRType::Void)
+                } else if break_values.is_empty() {
+                    IRValue::Undef(ty)
+                } else if break_values.len() == 1 {
+                    break_values[0].0.clone()
                 } else {
-                    if break_values.is_empty() {
-                        IRValue::Undef(ty)
-                    } else if break_values.len() == 1 {
-                        break_values[0].0.clone()
-                    } else {
-                        self.emit_value_instr(
-                            IRInstructionKind::Phi {
-                                ty: ty.clone(),
-                                incomings: break_values,
-                            },
-                            ty,
-                        )
-                    }
+                    self.emit_value_instr(
+                        IRInstructionKind::Phi {
+                            ty: ty.clone(),
+                            incomings: break_values,
+                        },
+                        ty,
+                    )
                 }
             }
             None => IRValue::Undef(IRType::Void),
@@ -2310,8 +2290,7 @@ impl<'a> FunctionBuilder<'a> {
         let elem_ty = rx_to_ir_type(self.type_ctx, &layout.elem_type);
         let length = length_hint.or(layout.size).ok_or_else(|| {
             LowerError::UnsupportedExpression(format!(
-                "array literal missing length information: {:?}",
-                literal
+                "array literal missing length information: {literal:?}"
             ))
         })?;
         match literal {
@@ -2464,12 +2443,12 @@ impl<'a> FunctionBuilder<'a> {
             ExpressionNode::Return(node) => node
                 .value
                 .as_ref()
-                .map_or(false, |expr| Self::expr_uses_identifier(expr, name)),
+                .is_some_and(|expr| Self::expr_uses_identifier(expr, name)),
             ExpressionNode::As(node) => Self::expr_uses_identifier(&node.expr, name),
             ExpressionNode::Break(node) => node
                 .value
                 .as_ref()
-                .map_or(false, |expr| Self::expr_uses_identifier(expr, name)),
+                .is_some_and(|expr| Self::expr_uses_identifier(expr, name)),
             _ => false,
         }
     }
@@ -2491,7 +2470,7 @@ impl<'a> FunctionBuilder<'a> {
             StatementNode::Let(node) => node
                 .value
                 .as_ref()
-                .map_or(false, |expr| Self::expr_uses_identifier(expr, name)),
+                .is_some_and(|expr| Self::expr_uses_identifier(expr, name)),
             StatementNode::Assign(node) => {
                 node.identifier.lexeme == name || Self::expr_uses_identifier(&node.value, name)
             }
@@ -2589,14 +2568,12 @@ impl<'a> FunctionBuilder<'a> {
     fn find_load_source(&self, id: &str) -> Option<IRValue> {
         // Search backwards through instructions to find the Load that produced this value
         for instr in self.current_block.instructions.iter().rev() {
-            if let Some(res) = &instr.result {
-                if let IRValue::InstructionRef { id: res_id, .. } = res {
-                    if res_id == id {
-                        if let IRInstructionKind::Load { ptr, .. } = &instr.kind {
-                            return Some(ptr.clone());
-                        }
-                        return None; // Found the instruction but it's not a Load
+            if let Some(IRValue::InstructionRef { id: res_id, .. }) = &instr.result {
+                if res_id == id {
+                    if let IRInstructionKind::Load { ptr, .. } = &instr.kind {
+                        return Some(ptr.clone());
                     }
+                    return None; // Found the instruction but it's not a Load
                 }
             }
         }
@@ -2657,11 +2634,16 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    pub fn rebind_value(&mut self, name: String, binding: Binding) {
+    pub fn rebind_value(&mut self, mut name: String, binding: Binding) {
         for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(&name) {
-                scope.insert(name, binding);
-                return;
+            match scope.entry(name) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    e.insert(binding);
+                    return;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    name = e.into_key();
+                }
             }
         }
         if let Some(scope) = self.scopes.last_mut() {
@@ -2686,15 +2668,13 @@ impl<'a> FunctionBuilder<'a> {
                 RxType::Struct(name) => name.clone(),
                 other => {
                     return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot access member of non-struct type: {:?}",
-                        other
+                        "cannot access member of non-struct type: {other:?}"
                     )));
                 }
             },
             other => {
                 return Err(LowerError::UnsupportedExpression(format!(
-                    "cannot access member of non-struct type: {:?}",
-                    other
+                    "cannot access member of non-struct type: {other:?}"
                 )));
             }
         };
@@ -2734,18 +2714,15 @@ impl<'a> FunctionBuilder<'a> {
                         Ok((loaded, pointee.as_ref().clone()))
                     }
                     other => Err(LowerError::UnsupportedExpression(format!(
-                        "cannot access member of non-struct type: {:?}",
-                        other
+                        "cannot access member of non-struct type: {other:?}"
                     ))),
                 },
                 other => Err(LowerError::UnsupportedExpression(format!(
-                    "cannot access member of non-struct type: {:?}",
-                    other
+                    "cannot access member of non-struct type: {other:?}"
                 ))),
             },
             other => Err(LowerError::UnsupportedExpression(format!(
-                "cannot access member of non-pointer type: {:?}",
-                other
+                "cannot access member of non-pointer type: {other:?}"
             ))),
         }?;
 
@@ -2840,15 +2817,13 @@ impl<'a> FunctionBuilder<'a> {
                     RxType::Array(elem, _) => elem.as_ref().clone(),
                     other => {
                         return Err(LowerError::UnsupportedExpression(format!(
-                            "cannot index into non-array type: {:?}",
-                            other
+                            "cannot index into non-array type: {other:?}"
                         )));
                     }
                 },
                 other => {
                     return Err(LowerError::UnsupportedExpression(format!(
-                        "cannot index into non-array type: {:?}",
-                        other
+                        "cannot index into non-array type: {other:?}"
                     )));
                 }
             }
@@ -2862,8 +2837,7 @@ impl<'a> FunctionBuilder<'a> {
             },
             other => {
                 return Err(LowerError::UnsupportedExpression(format!(
-                    "cannot index into non-pointer type: {:?}",
-                    other
+                    "cannot index into non-pointer type: {other:?}"
                 )));
             }
         };
@@ -2887,7 +2861,7 @@ impl<'a> FunctionBuilder<'a> {
         let expected_ir = rx_to_ir_type(self.type_ctx, expected_rx);
         if matches!(expected_rx, RxType::Ref(_, _)) {
             if let Ok(ptr) = self.lower_lvalue_pointer(object) {
-                return Ok(self.ensure_pointer_type(ptr, expected_ir)?);
+                return self.ensure_pointer_type(ptr, expected_ir);
             }
             let value = self.lower_expression(object)?;
             if value.get_type() == expected_ir {
@@ -2927,7 +2901,7 @@ impl<'a> FunctionBuilder<'a> {
         let Some(rx_type) = self.type_ctx.get_type(node_id) else {
             return op;
         };
-        if !is_unsigned_integer_type(&rx_type) {
+        if !is_unsigned_integer_type(rx_type) {
             return op;
         }
         match op {
@@ -2952,7 +2926,7 @@ impl<'a> FunctionBuilder<'a> {
         let Some(rx_type) = self.type_ctx.get_type(lhs_id) else {
             return Err(LowerError::MissingType(lhs_id));
         };
-        if !is_unsigned_integer_type(&rx_type) {
+        if !is_unsigned_integer_type(rx_type) {
             return Ok(op);
         }
         match token {
@@ -2968,10 +2942,10 @@ impl<'a> FunctionBuilder<'a> {
         if ptr.get_type() == expected_ty {
             Ok(ptr)
         } else {
-            return Err(LowerError::TypeMismatch {
+            Err(LowerError::TypeMismatch {
                 expected: expected_ty,
                 found: ptr.get_type(),
-            });
+            })
         }
     }
 
@@ -3003,7 +2977,7 @@ impl<'a> FunctionBuilder<'a> {
         let Some(rx_type) = self.type_ctx.get_type(node_id) else {
             return Err(LowerError::MissingType(node_id));
         };
-        let ir_type = rx_to_ir_type(self.type_ctx, &rx_type);
+        let ir_type = rx_to_ir_type(self.type_ctx, rx_type);
         if matches!(ir_type, IRType::Void) {
             Ok(None)
         } else {

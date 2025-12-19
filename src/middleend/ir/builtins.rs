@@ -128,7 +128,7 @@ fn build_print(type_ctx: &TypeContext) -> IRFunction {
     let arg_ty = rx_to_ir_type(type_ctx, &sig.params()[0]);
     let str_inner = match &arg_ty {
         IRType::Ptr(inner) => inner.as_ref().clone(),
-        _ => panic!("unexpected type for print argument: {:?}", arg_ty),
+        _ => panic!("unexpected type for print argument: {arg_ty:?}"),
     };
 
     let mut entry_insts = Vec::new();

@@ -32,7 +32,7 @@ pub struct Token {
 }
 
 /// All possible token types in the Rust-like language
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Default)]
 pub enum TokenType {
     // Keywords - Reserved words
     As,
@@ -170,13 +170,8 @@ pub enum TokenType {
 
     // Special tokens
     Eof,
+    #[default]
     None,
-}
-
-impl Default for TokenType {
-    fn default() -> Self {
-        TokenType::None
-    }
 }
 
 impl TokenType {

@@ -44,22 +44,22 @@ pub fn validate_with_llvm_as(llvm_ir: &str) -> Result<(), String> {
             eprintln!("Warning: 'llvm-as' not found in PATH. Skipping LLVM IR validation.");
             return Ok(());
         }
-        Err(e) => return Err(format!("Failed to spawn 'llvm-as': {}", e)),
+        Err(e) => return Err(format!("Failed to spawn 'llvm-as': {e}")),
     };
 
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(llvm_ir.as_bytes())
-            .map_err(|e| format!("Failed to write LLVM IR to 'llvm-as' stdin: {}", e))?;
+            .map_err(|e| format!("Failed to write LLVM IR to 'llvm-as' stdin: {e}"))?;
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("Failed to wait for 'llvm-as' to finish: {}", e))?;
+        .map_err(|e| format!("Failed to wait for 'llvm-as' to finish: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("'llvm-as' reported errors:\n{}", stderr));
+        return Err(format!("'llvm-as' reported errors:\n{stderr}"));
     }
 
     Ok(())
@@ -82,7 +82,7 @@ pub fn compile_and_run_ir(
     let temp_dir = Builder::new()
         .prefix("rcompiler_temp")
         .tempdir()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+        .map_err(|e| format!("Failed to create temporary directory: {e}"))?;
 
     let ir_path = temp_dir.path().join("module.ll");
     fs::write(&ir_path, ir).map_err(|e| format!("Failed to write {}: {e}", ir_path.display()))?;
@@ -110,12 +110,12 @@ pub fn compile_and_run_ir(
         .output()
         .map_err(|err| match err.kind() {
             io::ErrorKind::NotFound => "Clang not found in PATH.".to_string(),
-            _ => format!("Failed to execute clang: {}", err),
+            _ => format!("Failed to execute clang: {err}"),
         })?;
 
     if !clang_output.status.success() {
         let stderr = String::from_utf8_lossy(&clang_output.stderr);
-        return Err(format!("Clang compilation failed:\n{}", stderr));
+        return Err(format!("Clang compilation failed:\n{stderr}"));
     }
 
     let mut child = Command::new(&exe_path)
@@ -123,13 +123,13 @@ pub fn compile_and_run_ir(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn executable: {}", e))?;
+        .map_err(|e| format!("Failed to spawn executable: {e}"))?;
 
     if !stdin_data.is_empty() {
         if let Some(stdin) = child.stdin.as_mut() {
             stdin
                 .write_all(stdin_data)
-                .map_err(|e| format!("Failed to write to executable stdin: {}", e))?;
+                .map_err(|e| format!("Failed to write to executable stdin: {e}"))?;
         }
     }
     drop(child.stdin.take());
@@ -144,7 +144,7 @@ pub fn compile_and_run_ir(
 
     let output = match rx.recv_timeout(timeout) {
         Ok(result) => {
-            let output = result.map_err(|e| format!("Failed to wait for executable: {}", e))?;
+            let output = result.map_err(|e| format!("Failed to wait for executable: {e}"))?;
             let _ = wait_handle.join();
             output
         }
@@ -153,16 +153,14 @@ pub fn compile_and_run_ir(
             terminate_process(pid);
             let _ = wait_handle.join();
             return Err(format!(
-                "Execution of '{}' timed out after {:?}",
-                exe_display, timeout
+                "Execution of '{exe_display}' timed out after {timeout:?}",
             ));
         }
 
         Err(RecvTimeoutError::Disconnected) => {
             let _ = wait_handle.join();
             return Err(format!(
-                "Execution of '{}' failed: channel disconnected",
-                exe_display
+                "Execution of '{exe_display}' failed: channel disconnected",
             ));
         }
     };
@@ -218,7 +216,7 @@ impl LLVMEmitter {
             .map(|(name, ty)| {
                 format!(
                     "{} {}",
-                    self.format_type(ty),
+                    Self::format_type(ty),
                     self.format_argument_name(name)
                 )
             })
@@ -229,7 +227,7 @@ impl LLVMEmitter {
             let _ = writeln!(
                 self.output,
                 "declare {} @{}({})",
-                self.format_type(&func.return_type),
+                Self::format_type(&func.return_type),
                 func.name,
                 params
             );
@@ -239,7 +237,7 @@ impl LLVMEmitter {
         let _ = writeln!(
             self.output,
             "define {} @{}({}) {{",
-            self.format_type(&func.return_type),
+            Self::format_type(&func.return_type),
             func.name,
             params
         );
@@ -256,12 +254,12 @@ impl LLVMEmitter {
 
         for inst in &block.instructions {
             let line = self.format_instruction(inst);
-            let _ = writeln!(self.output, "  {}", line);
+            let _ = writeln!(self.output, "  {line}");
         }
 
         if let Some(terminator) = &block.terminator {
             let line = self.format_instruction(terminator);
-            let _ = writeln!(self.output, "  {}", line);
+            let _ = writeln!(self.output, "  {line}");
         }
     }
 
@@ -273,33 +271,33 @@ impl LLVMEmitter {
         match &inst.kind {
             IRInstructionKind::Alloca { alloc_type, align } => {
                 parts.push_str("alloca ");
-                parts.push_str(&self.format_type(alloc_type));
+                parts.push_str(&Self::format_type(alloc_type));
                 if let Some(align) = align {
-                    parts.push_str(&format!(", align {}", align));
+                    parts.push_str(&format!(", align {align}"));
                 }
             }
             IRInstructionKind::Load { ptr, align } => {
                 let ty = inst.ty.as_ref().expect("Load instruction must have a type");
                 parts.push_str(&format!(
                     "load {}, {} {}",
-                    self.format_type(ty),
-                    self.format_type(&IRType::Ptr(Box::new(ty.clone()))),
+                    Self::format_type(ty),
+                    Self::format_type(&IRType::Ptr(Box::new(ty.clone()))),
                     self.format_value(ptr)
                 ));
                 if let Some(align) = align {
-                    parts.push_str(&format!(", align {}", align));
+                    parts.push_str(&format!(", align {align}"));
                 }
             }
             IRInstructionKind::Store { value, ptr, align } => {
                 parts.push_str(&format!(
                     "store {} {}, {} {}",
-                    self.format_type(&value.get_type()),
+                    Self::format_type(&value.get_type()),
                     self.format_value(value),
-                    self.format_type(&ptr.get_type()),
+                    Self::format_type(&ptr.get_type()),
                     self.format_value(ptr)
                 ));
                 if let Some(align) = align {
-                    parts.push_str(&format!(", align {}", align));
+                    parts.push_str(&format!(", align {align}"));
                 }
             }
             IRInstructionKind::GetElementPtr {
@@ -313,19 +311,19 @@ impl LLVMEmitter {
                     parts.push_str("getelementptr ");
                 }
                 let elem_ty = match &base.get_type() {
-                    IRType::Ptr(inner) => self.format_type(inner),
-                    other => self.format_type(other),
+                    IRType::Ptr(inner) => Self::format_type(inner),
+                    other => Self::format_type(other),
                 };
                 parts.push_str(&format!(
                     "{}, {} {}",
                     elem_ty,
-                    self.format_type(&base.get_type()),
+                    Self::format_type(&base.get_type()),
                     self.format_value(base)
                 ));
                 for idx in indices {
                     parts.push_str(&format!(
                         ", {} {}",
-                        self.format_type(&idx.get_type()),
+                        Self::format_type(&idx.get_type()),
                         self.format_value(idx)
                     ));
                 }
@@ -334,7 +332,7 @@ impl LLVMEmitter {
                 parts.push_str(&format!(
                     "{} {} {}, {}",
                     *op,
-                    self.format_type(&lhs.get_type()),
+                    Self::format_type(&lhs.get_type()),
                     self.format_value(lhs),
                     self.format_value(rhs)
                 ));
@@ -343,7 +341,7 @@ impl LLVMEmitter {
                 parts.push_str(&format!(
                     "icmp {} {} {}, {}",
                     *op,
-                    self.format_type(&lhs.get_type()),
+                    Self::format_type(&lhs.get_type()),
                     self.format_value(lhs),
                     self.format_value(rhs)
                 ));
@@ -352,13 +350,13 @@ impl LLVMEmitter {
                 parts.push_str(&format!(
                     "{} {} {} to {}",
                     *op,
-                    self.format_type(&value.get_type()),
+                    Self::format_type(&value.get_type()),
                     self.format_value(value),
-                    self.format_type(to_type)
+                    Self::format_type(to_type)
                 ));
             }
             IRInstructionKind::Br { dest } => {
-                parts.push_str(&format!("br label %{}", dest));
+                parts.push_str(&format!("br label %{dest}"));
             }
             IRInstructionKind::CondBr {
                 cond,
@@ -367,7 +365,7 @@ impl LLVMEmitter {
             } => {
                 parts.push_str(&format!(
                     "br {} {}, label %{}, label %{}",
-                    self.format_type(&cond.get_type()),
+                    Self::format_type(&cond.get_type()),
                     self.format_value(cond),
                     then_dest,
                     else_dest
@@ -375,7 +373,7 @@ impl LLVMEmitter {
             }
             IRInstructionKind::Call { callee, args } => {
                 let callee_str = match callee {
-                    CallTarget::Direct(name) => format!("@{}", name),
+                    CallTarget::Direct(name) => format!("@{name}"),
                     CallTarget::Indirect(value) => self.format_value(value),
                 };
                 let args_str = args
@@ -383,7 +381,7 @@ impl LLVMEmitter {
                     .map(|arg| {
                         format!(
                             "{} {}",
-                            self.format_type(&arg.get_type()),
+                            Self::format_type(&arg.get_type()),
                             self.format_value(arg)
                         )
                     })
@@ -393,19 +391,19 @@ impl LLVMEmitter {
                 if let Some(ret_ty) = &inst.ty {
                     parts.push_str(&format!(
                         "call {} {}({})",
-                        self.format_type(ret_ty),
+                        Self::format_type(ret_ty),
                         callee_str,
                         args_str
                     ));
                 } else {
-                    parts.push_str(&format!("call void {}({})", callee_str, args_str));
+                    parts.push_str(&format!("call void {callee_str}({args_str})"));
                 }
             }
             IRInstructionKind::Ret { value } => {
                 if let Some(value) = value {
                     parts.push_str(&format!(
                         "ret {} {}",
-                        self.format_type(&value.get_type()),
+                        Self::format_type(&value.get_type()),
                         self.format_value(value)
                     ));
                 } else {
@@ -413,7 +411,7 @@ impl LLVMEmitter {
                 }
             }
             IRInstructionKind::Phi { ty, incomings } => {
-                parts.push_str(&format!("phi {} ", self.format_type(ty)));
+                parts.push_str(&format!("phi {} ", Self::format_type(ty)));
                 if incomings.is_empty() {
                     parts.push_str("[]");
                 } else {
@@ -436,11 +434,11 @@ impl LLVMEmitter {
                     .expect("Select instruction must have a type");
                 parts.push_str(&format!(
                     "select {} {}, {} {}, {} {}",
-                    self.format_type(&cond.get_type()),
+                    Self::format_type(&cond.get_type()),
                     self.format_value(cond),
-                    self.format_type(ty),
+                    Self::format_type(ty),
                     self.format_value(true_val),
-                    self.format_type(ty),
+                    Self::format_type(ty),
                     self.format_value(false_val)
                 ));
             }
@@ -452,7 +450,7 @@ impl LLVMEmitter {
                     .join(", ");
                 parts.push_str(&format!(
                     "extractvalue {} {}, {}",
-                    self.format_type(&aggregate.get_type()),
+                    Self::format_type(&aggregate.get_type()),
                     self.format_value(aggregate),
                     indices_str
                 ));
@@ -469,9 +467,9 @@ impl LLVMEmitter {
                     .join(", ");
                 parts.push_str(&format!(
                     "insertvalue {} {}, {} {}, {}",
-                    self.format_type(&aggregate.get_type()),
+                    Self::format_type(&aggregate.get_type()),
                     self.format_value(aggregate),
-                    self.format_type(&value.get_type()),
+                    Self::format_type(&value.get_type()),
                     self.format_value(value),
                     indices_str
                 ));
@@ -480,7 +478,7 @@ impl LLVMEmitter {
         parts
     }
 
-    fn format_type(&self, ty: &IRType) -> String {
+    fn format_type(ty: &IRType) -> String {
         match ty {
             IRType::Void => "void".to_string(),
             IRType::I1 => "i1".to_string(),
@@ -493,14 +491,14 @@ impl LLVMEmitter {
                 } else {
                     let inner = fields
                         .iter()
-                        .map(|f| self.format_type(f))
+                        .map(Self::format_type)
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("{{ {} }}", inner)
+                    format!("{{ {inner} }}")
                 }
             }
             IRType::Array { elem_type, size } => {
-                format!("[{} x {}]", size, self.format_type(elem_type))
+                format!("[{} x {}]", size, Self::format_type(elem_type))
             }
         }
     }
@@ -516,7 +514,7 @@ impl LLVMEmitter {
                 if let Some(name) = name {
                     self.ensure_prefix(name, '%')
                 } else {
-                    format!("%arg{}", index)
+                    format!("%arg{index}")
                 }
             }
             IRValue::InstructionRef { id, .. } => self.ensure_prefix(id, '%'),
@@ -531,7 +529,7 @@ impl LLVMEmitter {
         if name.starts_with(prefix) {
             name.to_string()
         } else {
-            format!("{}{}", prefix, name)
+            format!("{prefix}{name}")
         }
     }
 }
